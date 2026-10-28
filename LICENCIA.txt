@@ -1,0 +1,44 @@
+Spanishverse Library — programa libre y gratuito
+================================================
+
+Spanishverse Library es un proyecto de fans y para fans, sin fines de lucro. Es y va a ser siempre GRATIS: nadie puede
+cobrar por él. Si alguien te lo vendió, te estafaron.
+
+El código del programa
+----------------------
+El código (los archivos .pyw y .py y los scripts) se publica con la licencia MIT:
+
+Copyright (c) 2026 los autores de Spanishverse Library
+
+Por la presente se concede permiso, libre de cargos, a cualquier persona que obtenga una copia de este software
+y de los archivos de documentación asociados (el "Software"), a utilizar el Software sin restricción, incluyendo
+sin limitación los derechos a usar, copiar, modificar, fusionar, publicar, distribuir, sublicenciar y/o vender
+copias del Software, y a permitir a las personas a las que se les proporcione el Software a hacer lo mismo,
+sujeto a las siguientes condiciones:
+
+El aviso de copyright anterior y este aviso de permiso se incluirán en todas las copias o partes sustanciales
+del Software.
+
+EL SOFTWARE SE PROPORCIONA "COMO ESTÁ", SIN GARANTÍA DE NINGÚN TIPO, EXPRESA O IMPLÍCITA, INCLUYENDO PERO NO
+LIMITADO A GARANTÍAS DE COMERCIALIZACIÓN, IDONEIDAD PARA UN PROPÓSITO PARTICULAR E INCUMPLIMIENTO. EN NINGÚN
+CASO LOS AUTORES O PROPIETARIOS DE LOS DERECHOS DE AUTOR SERÁN RESPONSABLES DE NINGUNA RECLAMACIÓN, DAÑOS U OTRAS
+RESPONSABILIDADES, YA SEA EN UNA ACCIÓN DE CONTRATO, AGRAVIO O CUALQUIER OTRO MOTIVO, DERIVADAS DE, FUERA DE O EN
+CONEXIÓN CON EL SOFTWARE O SU USO U OTRO TIPO DE ACCIONES EN EL SOFTWARE.
+
+El contenido del juego
+----------------------
+Shadowverse: Worlds Beyond, sus cartas, nombres, textos, imágenes, ilustraciones y voces son propiedad de
+Cygames, Inc. (© Cygames, Inc.). Spanishverse Library no está afiliado, respaldado ni patrocinado por Cygames.
+El programa no modifica el juego ni toca su cliente: muestra la información pública del sitio oficial y, para
+las voces, lee los audios que el propio juego deja instalados en la PC de cada usuario.
+
+- Datos e imágenes de las cartas: sitio oficial (shadowverse-wb.com y latam.shadowverse-wb.com).
+- Ilustraciones sin marco: WBGDB (github.com/mhmkhlrdn/WBGDB) y publicaciones de Cygames y de los propios
+  ilustradores. Cada ilustración es obra de su ilustrador, que figura en la ficha de cada carta.
+- Las traducciones propias (efectos, ambientaciones y preguntas sin texto oficial en español) son trabajo de
+  fans, hechas para la comunidad latina.
+
+Programas de terceros incluidos
+-------------------------------
+- vgmstream (tools/vgmstream), para convertir los audios del juego: licencia propia, incluida en esa carpeta.
+- Python, Tcl/Tk, NumPy, Pillow y SoundCard (dentro del .exe), cada uno con su licencia libre.

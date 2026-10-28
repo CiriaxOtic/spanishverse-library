@@ -1,0 +1,5 @@
+{
+ "_explicacion": "Arreglos publicados a mano. efectos: {numero_de_carta: texto del efecto en español (con el mismo formato que el sitio oficial)} reemplaza la traducción propia de esa carta. no_crea_al_azar: cartas que el programa toma mal como creadoras al azar.",
+ "efectos": {},
+ "no_crea_al_azar": []
+}

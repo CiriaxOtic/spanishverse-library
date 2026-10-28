@@ -1,0 +1,12 @@
+cards.db
+images/
+voices/cache/
+voices/index*
+voices/profiles.npy
+mazos/
+ajustes.json
+raw/
+work/
+publicar/
+__pycache__/
+datos_descargados.json
