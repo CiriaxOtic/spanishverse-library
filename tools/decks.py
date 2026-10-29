@@ -37,6 +37,28 @@ def deck_hash(fmt, class_id, counts):
     return ".".join([str(fmt), str(class_id)] + [enc(cid) for cid in ids])
 
 
+def parse_hash(text):
+    """(formato, clase, {carta: copias}) de un enlace de la página oficial (…/deck/detail/?hash=…) o de un hash
+    pegado tal cual; None si el texto no es eso."""
+    m = re.search(r"(?:hash=)?\b([12])\.(\d+)\.([0-9A-Za-z_\-.]+)", text.strip())
+    if not m:
+        return None
+    counts = {}
+    for part in m.group(3).split("."):
+        if len(part) != 4 or any(ch not in ALPHABET for ch in part):
+            return None
+        cid = 0
+        for ch in part:
+            cid = cid * 64 + ALPHABET.index(ch)
+        counts[cid] = counts.get(cid, 0) + 1
+    return int(m.group(1)), int(m.group(2)), counts
+
+
+def looks_like_code(text):
+    """¿Parece un código de mazo del juego (4 letras o números)?"""
+    return bool(re.fullmatch(r"[0-9A-Za-z]{4}", text.strip()))
+
+
 def official_url(fmt, class_id, counts):
     """Página del mazo en el sitio oficial (la de LATAM no tiene el armador de mazos: va la global en inglés)."""
     return f"{SITE}/en/deck/detail/?hash={deck_hash(fmt, class_id, counts)}"

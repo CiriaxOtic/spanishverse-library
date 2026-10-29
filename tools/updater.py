@@ -18,6 +18,7 @@ import os
 import shutil
 import sqlite3
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -244,8 +245,64 @@ def sync_packs(info, progress):
 # ---------- versión nueva del programa ----------
 INSTALL_DIR = ROOT / "_actualizacion"
 # Lo que es del usuario no se pisa al instalar una versión nueva (se conserva tal cual).
-KEEP_FILES = ["ajustes.json", "mapping.json", "datos_descargados.json", "errores.log"]
-KEEP_DIRS = ["mazos", "images", "voices", "traducciones", "raw", "_actualizacion"]
+KEEP_FILES = ["ajustes.json", "mapping.json", "datos_descargados.json", "errores.log", "favoritos.json",
+              "cambios.json"]
+KEEP_DIRS = ["mazos", "images", "voices", "traducciones", "raw", "_actualizacion", "respaldos"]
+
+
+STARTED_OK = Path(tempfile.gettempdir()) / "spanishverse_arranco.ok"  # lo escribe el programa al abrir bien
+
+
+def mark_started():
+    """El programa abrió bien: el instalador de una versión nueva ya no tiene que volver a la anterior."""
+    try:
+        STARTED_OK.write_text(config.VERSION, encoding="utf-8")
+    except OSError:
+        pass
+
+
+def write_install_script(src, new, old, version, pid):
+    """Script de PowerShell que, con el programa ya cerrado, copia la versión nueva encima (sin tocar lo del
+    usuario), la abre y, si se cierra sin llegar a abrir bien, vuelve a poner la versión anterior."""
+    q = lambda s: str(s).replace("'", "''")
+    exe = ROOT / "Spanishverse Library.exe"
+    log = q(ROOT / "errores.log")
+    keep = f"/XF {' '.join(KEEP_FILES)} /XD {' '.join(KEEP_DIRS)} /NFL /NDL /NJH /NJS /NP"
+    script = INSTALL_DIR.parent / "_instalar_version_nueva.ps1"
+    script.write_text(
+        "$ErrorActionPreference = 'SilentlyContinue'\n"
+        f"Wait-Process -Id {pid} -Timeout 120\n"
+        "Start-Sleep -Seconds 1\n"
+        # 1. copia del programa actual (sin los datos del usuario), para volver a ella si la nueva no abre
+        f"Remove-Item -Recurse -Force -LiteralPath '\\\\?\\{q(old.resolve())}'\n"
+        f"robocopy '{q(ROOT)}' '{q(old)}' /E /R:2 /W:1 {keep} | Out-Null\n"
+        "$copiaOk = $LASTEXITCODE -lt 8\n"
+        # 2. la versión nueva encima
+        f"robocopy '{q(src)}' '{q(ROOT)}' /E /R:10 /W:2 {keep} | Out-Null\n"
+        # robocopy: 8 o más = no pudo copiar algo; corre sin ventana, así que se anota en errores.log
+        f"if ($LASTEXITCODE -ge 8) {{ Add-Content -Encoding UTF8 -Path '{log}' -Value \"$(Get-Date) Instalación de la versión "
+        f"{version}: no se pudieron copiar todos los archivos (código $LASTEXITCODE)\" }}\n"
+        # 3. se abre y se espera a que avise que arrancó bien; si se cierra sin avisar, vuelve la versión anterior
+        f"Remove-Item -Force '{q(STARTED_OK)}'\n"
+        f"$p = Start-Process -FilePath '{q(exe)}' -ArgumentList '--actualizar' -WorkingDirectory '{q(ROOT)}' -PassThru\n"
+        "$ok = $false\n"
+        "for ($i = 0; $i -lt 180; $i++) {\n"
+        f"  if (Test-Path '{q(STARTED_OK)}') {{ $ok = $true; break }}\n"
+        "  if ($p.HasExited) { break }\n"
+        "  Start-Sleep -Milliseconds 500\n"
+        "}\n"
+        "if (-not $ok -and $p.HasExited -and $copiaOk) {\n"
+        f"  Add-Content -Encoding UTF8 -Path '{log}' -Value \"$(Get-Date) La versión {version} no llegó a abrir: se volvió a la "
+        f"versión {config.VERSION}\"\n"
+        f"  robocopy '{q(old)}' '{q(ROOT)}' /E /R:10 /W:2 {keep} | Out-Null\n"
+        f"  Start-Process -FilePath '{q(exe)}' -WorkingDirectory '{q(ROOT)}'\n"
+        "}\n"
+        f"Remove-Item -Recurse -Force '{q(INSTALL_DIR)}'\n"
+        f"Remove-Item -Recurse -Force -LiteralPath '\\\\?\\{q(new.resolve())}'\n"
+        f"Remove-Item -Recurse -Force -LiteralPath '\\\\?\\{q(old.resolve())}'\n"
+        "Remove-Item -Force $PSCommandPath\n",
+        encoding="utf-8-sig")
+    return script
 
 
 def prepare_program_update(progress):
@@ -259,6 +316,8 @@ def prepare_program_update(progress):
         progress("No hay una versión nueva para instalar.")
         return None
     INSTALL_DIR.mkdir(exist_ok=True)
+    import backups
+    backups.make(f"antes de instalar la versión {version}")
     progress(f"Bajando la versión {version} ({program.get('tamaño', '?')})...")
     zpath = INSTALL_DIR / "programa.zip"
     if not download(program["url"], zpath, progress):
@@ -266,8 +325,8 @@ def prepare_program_update(progress):
         return None
     # Se descomprime en una carpeta temporal de nombre corto y con el prefijo de rutas largas de Windows: dentro de
     # la carpeta del programa algunas rutas internas pasarían el límite de 260 caracteres.
-    import tempfile
     new = Path(tempfile.gettempdir()) / "spanishverse_nuevo"
+    old = Path(tempfile.gettempdir()) / "spanishverse_anterior"  # copia del programa actual, por si la nueva falla
     long = lambda p: "\\\\?\\" + str(p.resolve())
     if new.exists():
         shutil.rmtree(long(new), ignore_errors=True)
@@ -285,25 +344,7 @@ def prepare_program_update(progress):
     if src is None:
         progress("La descarga no tiene el programa; probá de nuevo más tarde.")
         return None
-    q = lambda s: str(s).replace("'", "''")
-    exe = ROOT / "Spanishverse Library.exe"
-    script = INSTALL_DIR.parent / "_instalar_version_nueva.ps1"
-    script.write_text(
-        "$ErrorActionPreference = 'SilentlyContinue'\n"
-        f"Wait-Process -Id {os.getpid()} -Timeout 120\n"
-        "Start-Sleep -Seconds 1\n"
-        f"robocopy '{q(src)}' '{q(ROOT)}' /E /R:10 /W:2 /XF {' '.join(KEEP_FILES)} "
-        f"/XD {' '.join(KEEP_DIRS)} /NFL /NDL /NJH /NJS /NP | Out-Null\n"
-        # robocopy: 8 o más = no pudo copiar algo; corre sin ventana, así que se anota en errores.log
-        "if ($LASTEXITCODE -ge 8) { Add-Content -Path "
-        f"'{q(ROOT / 'errores.log')}' -Value \"$(Get-Date) Instalación de la versión {version}: no se pudieron "
-        "copiar todos los archivos (código $LASTEXITCODE)\" }\n"
-        f"Start-Process -FilePath '{q(exe)}' -ArgumentList '--actualizar' -WorkingDirectory '{q(ROOT)}'\n"
-        "Start-Sleep -Seconds 3\n"
-        f"Remove-Item -Recurse -Force '{q(INSTALL_DIR)}'\n"
-        f"Remove-Item -Recurse -Force -LiteralPath '\\\\?\\{q(new.resolve())}'\n"
-        "Remove-Item -Force $PSCommandPath\n",
-        encoding="utf-8-sig")
+    script = write_install_script(src, new, old, version, os.getpid())
     progress(f"Versión {version} lista para instalar.")
     import paths
     paths.save_setting("instalacion_intentada", version)  # ver install_blocked()
@@ -462,6 +503,8 @@ def _console(text):
 
 def run(progress=_console, with_voices=True):
     """Actualiza todo. Devuelve {"version_nueva": str|None, "cartas_antes": n, "cartas_despues": n}."""
+    import backups
+    backups.make("antes de actualizar")  # mazos, favoritas, ajustes y voces asociadas a mano
     before = _count()
     info = None
     files_changed = 0
@@ -490,7 +533,12 @@ def run(progress=_console, with_voices=True):
         why = ("primera descarga" if not DB.exists() else f"{official - local} cartas nuevas" if official > local
                else "revisión semanal de cambios en las cartas")
         if _step(f"  bajando la lista completa ({why}; puede tardar unos minutos)...", progress, _cards):
+            import changes
+            photo = changes.snapshot()  # para anotar después qué cartas llegaron y cuáles cambiaron
             _step("Armando la base de cartas y las traducciones...", progress, _build)
+            found = _step("Comparando con las cartas de antes...", progress, changes.record, photo)
+            if found and any(found):
+                progress(f"  {found[0]} cartas nuevas, {found[1]} con cambios de balance")
             cards_changed = True
             state = _state()
             state["cartas_revision"] = time.time()

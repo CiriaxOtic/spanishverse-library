@@ -3,6 +3,7 @@
 Lee cards.db y la carpeta images/ que arman tools/fetch_cards.py y tools/build_db.py.
 Abrir con doble clic (usa pythonw, sin consola).
 """
+import os
 import queue
 import re
 import sqlite3
@@ -40,6 +41,22 @@ except ImportError:
 BG, PANEL, INK, MUTED, LINE = "#15141a", "#1f1e26", "#ecebf0", "#a09fab", "#34323e"
 FIELD = "#2a2833"
 ACCENT, KW, KW_BG, LINK ="#a48cf0", "#f3c565", "#3a2f17", "#8fb4ff"
+ACCENT_HOVER, BAD = "#8a6fe0", "#e06c6c"
+
+
+def _chosen_theme():
+    try:
+        return json.loads((ROOT / "ajustes.json").read_text(encoding="utf-8")).get("tema", "oscuro")
+    except (OSError, ValueError):
+        return "oscuro"
+
+
+THEME = _chosen_theme()  # «Ayuda → Tema claro / oscuro» (se aplica al reiniciar el programa)
+if THEME == "claro":
+    BG, PANEL, INK, MUTED, LINE = "#f1f0f5", "#ffffff", "#1d1b24", "#64616f", "#d6d3df"
+    FIELD = "#eae8f0"
+    ACCENT, KW, KW_BG, LINK = "#7357d4", "#8a5a00", "#fbeccb", "#2a5bc4"
+    ACCENT_HOVER, BAD = "#5f45bd", "#c43c3c"
 FONT = ("Segoe UI", 10)
 SETTINGS = ROOT / "ajustes.json"  # preferencias del usuario (por ahora, el tamaño de letra)
 # Tamaños de letra que se pueden elegir: de 100 % a 135 %, más grande sin desarmar las pantallas.
@@ -272,7 +289,7 @@ class Data:
 
 class TriCheck(tk.Frame):
     """Casilla de tres estados: 0 vacía (no filtra), 1 visto (solo eso), 2 cruz (todo menos eso)."""
-    MARKS = {0: ("☐", MUTED), 1: ("☑", "#5cc98a"), 2: ("☒", "#e06c6c")}
+    MARKS = {0: ("☐", MUTED), 1: ("☑", "#5cc98a"), 2: ("☒", BAD)}
 
     def __init__(self, parent, text, command, bg=BG, states=3):
         """states=2: casilla común (vacía / visto), sin la cruz de "todo menos esto"."""
@@ -524,7 +541,7 @@ class VoiceAssistant(tk.Toplevel):
         btn = self.btn_normal if phase == "normal" else self.btn_evo
         btn.config(text="● Grabar normal" if phase == "normal" else "● Grabar evolucionada")
         if error:
-            self.status.config(text=f"No se pudo grabar el audio de la PC: {error}", fg="#e06c6c")
+            self.status.config(text=f"No se pudo grabar el audio de la PC: {error}", fg=BAD)
             return
         secs = 0 if self.recs[phase] is None else len(self.recs[phase]) / self.SR
         self.btn_own.config(state="normal" if self.recs["normal"] is not None else "disabled")
@@ -534,10 +551,10 @@ class VoiceAssistant(tk.Toplevel):
     def identify(self, force_bank=None):
         if not voices.INDEX_JSON.exists():
             self.status.config(text="Las voces del juego todavía se están preparando. Probá de nuevo en un rato.",
-                               fg="#e06c6c")
+                               fg=BAD)
             return
         if self.recs["normal"] is None:
-            self.status.config(text="Primero grabá las líneas normales.", fg="#e06c6c")
+            self.status.config(text="Primero grabá las líneas normales.", fg=BAD)
             return
         self.status.config(text="Identificando…", fg=INK)
         self.update_idletasks()
@@ -555,7 +572,7 @@ class VoiceAssistant(tk.Toplevel):
             self.status.config(text="No reconocí ninguna línea. Revisá que la música y los efectos del juego estén "
                                     "en 0 y volvé a grabar.\nSi esta carta solo hace ruidos, puede que sus sonidos "
                                     "no estén como archivo en el juego: en ese caso usá «Usar mis grabaciones».",
-                               fg="#e06c6c")
+                               fg=BAD)
             return
         # Todo el paquete es del mismo personaje: las líneas que no se escucharon se agregan igual al final
         # de "Normal", marcadas, para que el usuario solo tenga que ubicarlas (◀, ⇄) o quitar alguna (✕).
@@ -600,11 +617,11 @@ class VoiceAssistant(tk.Toplevel):
     def use_own(self):
         """Guarda las grabaciones del usuario (cortadas en cada sonido) como las líneas de la carta."""
         if self.recs["normal"] is None:
-            self.status.config(text="Primero grabá las líneas normales.", fg="#e06c6c")
+            self.status.config(text="Primero grabá las líneas normales.", fg=BAD)
             return
         own = voices.save_recording_lines(self.card_id, self.recs, self.SR)
         if not own["normal"]:
-            self.status.config(text="No encontré sonidos en la grabación. Volvé a grabar.", fg="#e06c6c")
+            self.status.config(text="No encontré sonidos en la grabación. Volvé a grabar.", fg=BAD)
             return
         r = {"bank": None, "normal": own["normal"], "evo": own["evo"], "auto": [], "alternatives": []}
         self.result = r
@@ -768,6 +785,23 @@ class VoiceAssistant(tk.Toplevel):
         self.destroy()
 
 
+FAVORITES = ROOT / "favoritos.json"  # cartas marcadas con ★ (datos del usuario: se conservan al actualizar)
+
+
+def load_favorites():
+    try:
+        return set(json.loads(FAVORITES.read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return set()
+
+
+def save_favorites(ids):
+    try:
+        FAVORITES.write_text(json.dumps(sorted(ids)), encoding="utf-8")
+    except OSError:
+        pass
+
+
 def load_corrections():
     """traducciones/correcciones.json: arreglos publicados a mano (se bajan de GitHub al actualizar)."""
     try:
@@ -801,6 +835,17 @@ def choose_game_folder(parent):
     return True
 
 
+def open_manual():
+    """Abre el manual en PDF (está en la carpeta del programa o en docs/)."""
+    for path in (ROOT / "Manual de Spanishverse Library.pdf", ROOT / "docs" / "Manual de Spanishverse Library.pdf"):
+        if path.exists():
+            import os
+            os.startfile(str(path))
+            return
+    import config
+    webbrowser.open(f"https://github.com/{config.GITHUB_USER}/{config.GITHUB_REPO}")
+
+
 def restart_program(window):
     """Cierra el programa y lo vuelve a abrir (para cargar las cartas recién actualizadas)."""
     import subprocess
@@ -808,6 +853,171 @@ def restart_program(window):
     args = [sys.executable] if paths.FROZEN else [sys.executable, str(Path(__file__).resolve())]
     subprocess.Popen(args, cwd=str(ROOT))
     window.destroy()
+
+
+SHORTCUTS_TEXT = ("Ctrl+F   Buscar\nCtrl+D   Armar mazo (abrir / cerrar)\nCtrl+G   Glosario\n"
+                  "Ctrl+U   Actualizar\nCtrl+E   Ver evolucionada / normal\nAlt+←    Volver a la carta anterior\n"
+                  "F1         Manual\nEsc        Cerrar el visor, «Ver mazo» o la lista de creadoras")
+
+
+def _dialog_base(win, title, width=640, height=520):
+    win.title(title)
+    win.configure(bg=PANEL, padx=16, pady=14)
+    win.geometry(f"{width}x{height}")
+    win.minsize(460, 360)
+    win.transient(win.master)
+
+
+class ReportWindow(tk.Toplevel):
+    """«Reportar un error» (sin carta) o «Sugerir una corrección» (de una carta). Arma el mensaje con la versión, la
+    carta y, si se quiere, el registro de errores; se copia para pegarlo en Discord o se abre en GitHub."""
+    KINDS = ["Traducción del efecto", "Ambientación o preguntas", "Creadoras / lo que trae", "Voz",
+             "Imagen o ilustración", "Datos de la carta", "Otro"]
+
+    def __init__(self, app, card_id=None):
+        super().__init__(app)
+        self.app, self.card_id = app, card_id
+        _dialog_base(self, "Sugerir una corrección" if card_id else "Reportar un error")
+        c = app.data.cards[card_id] if card_id else None
+        title = f"Sugerir una corrección: {c['name_en']}" if c else "Reportar un error"
+        tk.Label(self, text=title, bg=PANEL, fg=INK, font=F("Segoe UI Semibold", 13), anchor="w").pack(fill="x")
+        tk.Label(self, text=("Contá qué está mal y cómo debería ser. Se arma un mensaje con los datos de la carta "
+                             "para pegar en el grupo de Discord o publicar en GitHub." if c else
+                             "Contá qué estabas haciendo y qué pasó. Se arma un mensaje con la versión del programa "
+                             "y el registro de errores para pegar en el grupo de Discord o publicar en GitHub."),
+                 bg=PANEL, fg=MUTED, font=F(*FONT), wraplength=600, justify="left", anchor="w").pack(fill="x", pady=(2, 8))
+        self.kind = tk.StringVar(value=self.KINDS[0])
+        if c:
+            row = tk.Frame(self, bg=PANEL)
+            row.pack(fill="x", pady=(0, 6))
+            tk.Label(row, text="Qué está mal:", bg=PANEL, fg=INK, font=F(*FONT)).pack(side="left", padx=(0, 6))
+            ttk.Combobox(row, textvariable=self.kind, values=self.KINDS, state="readonly", width=28).pack(side="left")
+        self.body = tk.Text(self, bg=FIELD, fg=INK, insertbackground=INK, relief="flat", font=F(*FONT), wrap="word",
+                            height=8, padx=8, pady=6)
+        self.body.pack(fill="both", expand=True)
+        self.body.focus_set()
+        self.with_log = tk.BooleanVar(value=not c)
+        ttk.Checkbutton(self, text="Incluir el registro de errores (errores.log)", variable=self.with_log,
+                        style="Panel.TCheckbutton").pack(anchor="w", pady=(6, 0))
+        buttons = tk.Frame(self, bg=PANEL)
+        buttons.pack(fill="x", pady=(10, 0))
+        ttk.Button(buttons, text="Cerrar", command=self.destroy).pack(side="right")
+        ttk.Button(buttons, text="Abrir en GitHub", command=self.to_github).pack(side="right", padx=(0, 6))
+        ttk.Button(buttons, text="Copiar para Discord", style="Active.TButton",
+                   command=self.copy).pack(side="right", padx=(0, 6))
+        self.status = tk.Label(buttons, text="", bg=PANEL, fg=KW, font=F(*FONT))
+        self.status.pack(side="left")
+
+    def message(self):
+        import config
+        import platform
+        lines = [f"**{'Sugerencia' if self.card_id else 'Error'} — Spanishverse Library {config.VERSION}** "
+                 f"(Windows {platform.release()})"]
+        if self.card_id:
+            d = self.app.data
+            c = d.cards[self.card_id]
+            lines += [f"Carta: {c['name_en']}" + (f" ({c['name_es']})" if c["name_es"] else "") +
+                      f" · ID {c['card_id']} · {d.lookup['sets'].get(c['set_id'], ('',))[0]}",
+                      f"Qué está mal: {self.kind.get()}"]
+        lines += ["", self.body.get("1.0", "end").strip() or "(sin descripción)"]
+        if self.with_log.get():
+            try:
+                log = (ROOT / "errores.log").read_text(encoding="utf-8", errors="replace").strip().splitlines()[-40:]
+            except OSError:
+                log = []
+            lines += ["", "Registro de errores (últimas líneas):", "```", *(log or ["(vacío)"]), "```"]
+        return "\n".join(lines)
+
+    def copy(self):
+        self.clipboard_clear()
+        self.clipboard_append(self.message())
+        self.status.config(text="¡Copiado! Pegalo en el grupo de Discord (Ctrl+V).")
+
+    def to_github(self):
+        import config
+        import urllib.parse
+        text = self.message()
+        title = text.splitlines()[0].replace("**", "")
+        if self.card_id:
+            title = f"{self.kind.get()}: {self.app.data.cards[self.card_id]['name_en']}"
+        url = (f"https://github.com/{config.GITHUB_USER}/{config.GITHUB_REPO}/issues/new?"
+               + urllib.parse.urlencode({"title": title[:120], "body": text[:6000]}))
+        webbrowser.open(url)
+        self.status.config(text="Se abrió GitHub en el navegador (hace falta una cuenta gratis).")
+
+
+class NewsWindow(tk.Toplevel):
+    """«Novedades de la versión»: lo nuevo de esta versión (y de las anteriores que no se habían visto)."""
+
+    def __init__(self, app, since=None):
+        super().__init__(app)
+        import config
+        from novedades import NOVEDADES
+        _dialog_base(self, "Novedades de la versión", 620, 520)
+        tk.Label(self, text=f"Novedades de Spanishverse Library {config.VERSION}", bg=PANEL, fg=INK,
+                 font=F("Segoe UI Semibold", 13), anchor="w").pack(fill="x")
+        ttk.Button(self, text="Cerrar", style="Active.TButton", command=self.destroy).pack(side="bottom", anchor="e")
+        t = tk.Text(self, bg=FIELD, fg=INK, relief="flat", font=F(*FONT), wrap="word", padx=10, pady=8, height=10)
+        t.pack(fill="both", expand=True, pady=(8, 10))
+        t.tag_configure("v", font=F("Segoe UI Semibold", 11), foreground=ACCENT, spacing1=6)
+        ver = lambda v: tuple(int(x) for x in v.split("."))
+        shown = [(v, items) for v, items in NOVEDADES if ver(v) <= ver(config.VERSION)
+                 and (since is None and v == config.VERSION or since is not None and ver(v) > ver(since))]
+        for v, items in shown or NOVEDADES[:1]:
+            t.insert("end", f"Versión {v}\n", "v")
+            for item in items:
+                t.insert("end", f"• {item}\n")
+        t.config(state="disabled")
+
+
+class BackupsWindow(tk.Toplevel):
+    """«Copias de seguridad»: las últimas copias de los mazos, favoritas, ajustes y voces asociadas a mano."""
+
+    def __init__(self, app):
+        super().__init__(app)
+        import backups
+        self.app, self.backups = app, backups
+        _dialog_base(self, "Copias de seguridad", 620, 420)
+        tk.Label(self, text="Copias de seguridad", bg=PANEL, fg=INK, font=F("Segoe UI Semibold", 13),
+                 anchor="w").pack(fill="x")
+        tk.Label(self, text="Antes de cada actualización el programa guarda una copia de tus mazos, favoritas, "
+                            "ajustes y voces asociadas a mano (se guardan las últimas 5). Si algo salió mal, elegí "
+                            "una y apretá «Restaurar».", bg=PANEL, fg=MUTED, font=F(*FONT), wraplength=580,
+                 justify="left", anchor="w").pack(fill="x", pady=(2, 8))
+        self.list = ttk.Treeview(self, columns=("fecha", "motivo", "mazos"), show="headings", height=6,
+                                 selectmode="browse")
+        for key, text, w in (("fecha", "Fecha", 140), ("motivo", "Motivo", 300), ("mazos", "Mazos", 70)):
+            self.list.heading(key, text=text)
+            self.list.column(key, width=w, anchor="w" if key != "mazos" else "center")
+        self.list.pack(fill="both", expand=True)
+        buttons = tk.Frame(self, bg=PANEL)
+        buttons.pack(fill="x", pady=(10, 0))
+        ttk.Button(buttons, text="Cerrar", command=self.destroy).pack(side="right")
+        ttk.Button(buttons, text="Restaurar", style="Active.TButton", command=self.restore).pack(side="right", padx=(0, 6))
+        ttk.Button(buttons, text="Hacer una copia ahora", command=self.make_now).pack(side="left")
+        self.fill()
+
+    def fill(self):
+        self.list.delete(*self.list.get_children())
+        for folder, info in self.backups.list_backups():
+            self.list.insert("", "end", iid=str(folder), values=(info.get("fecha", ""), info.get("motivo", ""),
+                                                                 info.get("mazos", "")))
+
+    def make_now(self):
+        self.backups.make("copia hecha a mano")
+        self.fill()
+
+    def restore(self):
+        sel = self.list.selection()
+        if not sel:
+            return messagebox.showinfo("Copias de seguridad", "Elegí una copia de la lista.", parent=self)
+        if not messagebox.askyesno("Restaurar", "Se van a recuperar los mazos, favoritas, ajustes y voces asociadas "
+                                   "a mano de esa copia (lo que tenés ahora queda guardado en otra copia, por las "
+                                   "dudas). ¿Seguir?", parent=self):
+            return
+        self.backups.restore(sel[0])
+        messagebox.showinfo("Restaurar", "Listo. Reiniciá el programa para ver todo como estaba.", parent=self)
+        self.fill()
 
 
 class UpdateWindow(tk.Toplevel):
@@ -992,7 +1202,7 @@ class ImageZoom:
     vuelve al centro; Esc o clic en el fondo cierran. Abre ajustada a la ventana y el zoom llega como mucho a su
     tamaño real: agrandarla más la pixelaría."""
 
-    def __init__(self, app, path):
+    def __init__(self, app, path, gallery=None):
         from PIL import Image, ImageEnhance, ImageGrab, ImageTk
         self.app, self.Image, self.ImageTk = app, Image, ImageTk
         app.update_idletasks()
@@ -1008,9 +1218,14 @@ class ImageZoom:
         tk.Misc.tkraise(self.canvas)  # (en un Canvas, tkraise sería el de sus dibujos)
         self.back = ImageTk.PhotoImage(back)
         self.canvas.create_image(0, 0, anchor="nw", image=self.back)
+        # Galería: (cartas de la lista, posición de esta); ← → pasan de carta y Espacio las pasa solas.
+        self.gallery, self.slide_job = gallery, None
+        extra = "← →: otra carta    ·    Espacio: presentación    ·    " if gallery else ""
         self.canvas.create_text(w - 24, h - 20, anchor="se", fill="#c9c6d6", font=F("Segoe UI", 10),
                                 text="Clic: rotar    ·    Mantener y arrastrar: mover    ·    Rueda: zoom    ·    "
-                                     "Esc o clic afuera: cerrar")
+                                     + extra + "Esc o clic afuera: cerrar")
+        self.caption = self.canvas.create_text(24, 18, anchor="nw", fill="#ecebf0", font=F("Segoe UI Semibold", 12),
+                                               text=self._caption())
         self.source = Image.open(path).convert("RGBA")
         self.rotated, self.cx, self.cy = False, w / 2, h / 2
         self.zoom = self._fit()
@@ -1022,7 +1237,48 @@ class ImageZoom:
         self.canvas.bind("<ButtonRelease-1>", self._on_release)
         self.canvas.bind("<MouseWheel>", self._on_wheel)
         self.canvas.bind("<Escape>", lambda _: self.close())
+        if gallery:
+            self.canvas.bind("<Left>", lambda _: self.go(-1))
+            self.canvas.bind("<Right>", lambda _: self.go(1))
+            self.canvas.bind("<space>", lambda _: self.toggle_slideshow())
         self.canvas.focus_set()
+
+    def _caption(self):
+        if not self.gallery:
+            return ""
+        ids, i = self.gallery
+        c = self.app.data.cards[ids[i]]
+        show = "    ·    presentación (Espacio para parar)" if self.slide_job else ""
+        return f"{c['name_en']}" + (f"  ({c['name_es']})" if c["name_es"] else "") + f"    {i + 1} de {len(ids)}{show}"
+
+    def go(self, step):
+        """Pasa a la carta siguiente o anterior de la lista (salteando las que no tienen imagen)."""
+        ids, i = self.gallery
+        for _ in range(len(ids)):
+            i = (i + step) % len(ids)
+            path = self.app.zoom_path(ids[i], False)
+            if path:
+                break
+        else:
+            return
+        self.gallery = (ids, i)
+        self.source = self.Image.open(path).convert("RGBA")
+        self.rotated, self.cx, self.cy = False, self.w / 2, self.h / 2
+        self.zoom = self._fit()
+        self._render()
+        self.canvas.itemconfigure(self.caption, text=self._caption())
+
+    def toggle_slideshow(self):
+        if self.slide_job:
+            self.canvas.after_cancel(self.slide_job)
+            self.slide_job = None
+        else:
+            self._next_slide()
+        self.canvas.itemconfigure(self.caption, text=self._caption())
+
+    def _next_slide(self):
+        self.slide_job = self.canvas.after(4000, self._next_slide)
+        self.go(1)
 
     def _fit(self):
         """Escala para que entre entera en la ventana (nunca más grande que el tamaño real)."""
@@ -1103,6 +1359,8 @@ class ImageZoom:
         step()
 
     def close(self):
+        if self.slide_job:
+            self.canvas.after_cancel(self.slide_job)
         self.canvas.destroy()
 
 
@@ -1111,7 +1369,7 @@ class Tooltip:
         self.win = tk.Toplevel(root)
         self.win.withdraw()
         self.win.overrideredirect(True)
-        self.label = tk.Label(self.win, bg="#2a2833", fg=INK, font=F(*FONT), padx=8, pady=4, justify="left",
+        self.label = tk.Label(self.win, bg=FIELD, fg=INK, font=F(*FONT), padx=8, pady=4, justify="left",
                               highlightthickness=1, highlightbackground=LINE)
         self.label.pack()
 
@@ -1155,7 +1413,7 @@ class DeckBuilder(tk.Frame):
     (hasta 3 copias, 40 en total), curva de costos, tipos, cuántos viales cuesta crearlo y el código para
     cargarlo en el juego. Elegir una carta la muestra en el detalle de la ventana principal."""
     CURVE = ("≤1", "2", "3", "4", "5", "6", "7", "8+")
-    BAD = "#e06c6c"
+    BAD = BAD
 
     def __init__(self, app):
         # Va en la ventana principal, en el lugar de la lista de cartas (App.open_deck_builder lo intercambia).
@@ -1313,9 +1571,14 @@ class DeckBuilder(tk.Frame):
         ttk.Button(row, text="Copiar", command=self.copy_code).pack(side="left")
         row2 = tk.Frame(info, bg=PANEL)
         row2.pack(fill="x", pady=(6, 0))
-        self.import_btn = ttk.Button(row2, text="Cargar un código", command=self.import_code)
+        self.import_btn = ttk.Button(row2, text="Cargar código o enlace", command=self.import_code)
         self.import_btn.pack(side="left")
         ttk.Button(row2, text="Ver en la página oficial", command=self.open_official).pack(side="left", padx=(6, 0))
+        row3 = tk.Frame(info, bg=PANEL)
+        row3.pack(fill="x", pady=(6, 0))
+        ttk.Button(row3, text="🖼 Guardar como imagen", command=self.save_image).pack(side="left")
+        ttk.Button(row3, text="% Probabilidades", command=lambda: ProbabilityWindow(self)).pack(side="left",
+                                                                                             padx=(6, 0))
         self.status = tk.Label(info, text="", bg=PANEL, fg=MUTED, font=F(*FONT), anchor="w", justify="left", wraplength=300)
         self.status.pack(fill="x", pady=(6, 0))
         info.bind("<Configure>", lambda e: self.status.config(wraplength=max(200, e.width - 10)), add="+")
@@ -1672,15 +1935,27 @@ class DeckBuilder(tk.Frame):
             self.clipboard_append(self.code.get())
             self._say(f"Código {self.code.get()} copiado.")
 
-    def import_code(self):
-        code = simpledialog.askstring("Cargar un código", "Código del mazo (el de 4 letras que da el juego):",
-                                      parent=self)
+    def import_code(self, code=None):
+        """Carga un mazo de un código del juego (4 letras) o de un enlace de la página oficial."""
+        if code is None:
+            code = simpledialog.askstring("Cargar código o enlace", "Código del mazo (el de 4 letras que da el "
+                                          "juego) o enlace del mazo de la página oficial:", parent=self)
         if code is None:
             return  # canceló
         if not code.strip():
             return messagebox.showwarning("No se cargó el mazo", "No escribiste ningún código.", parent=self)
         if self.counts and not messagebox.askyesno(
-                "Cargar un código", "El mazo de ese código reemplaza al que estás armando. ¿Seguir?", parent=self):
+                "Cargar un mazo", "El mazo que pegaste reemplaza al que estás armando. ¿Seguir?", parent=self):
+            return
+        link = decks.parse_hash(code)
+        if link:  # un enlace trae el mazo entero: no hace falta preguntarle nada a la página oficial
+            fmt, cls, counts = link
+            unknown = self._load("Mazo pegado", fmt, cls, counts)
+            self._fill_pool()
+            self._update()
+            self._say("Mazo cargado del enlace." if not unknown else
+                      f"Mazo cargado a medias: faltan {len(unknown)} cartas (usá «⟳ Actualizar»).", MUTED if not unknown
+                      else self.BAD)
             return
         self._say("Buscando el mazo en la página oficial...")
 
@@ -1720,6 +1995,223 @@ class DeckBuilder(tk.Frame):
         if self.class_id is None or not self.counts:
             return self._say("Armá el mazo primero.", self.BAD)
         webbrowser.open(decks.official_url(self._format(), self.class_id, self.counts))
+
+    def deck_picture(self):
+        """El mazo como imagen (PIL): título, datos y las cartas por costo con sus copias."""
+        from PIL import Image, ImageDraw, ImageFont
+        fonts = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
+        font = lambda name, size: (ImageFont.truetype(str(fonts / name), size) if (fonts / name).exists()
+                                   else ImageFont.load_default())
+        cards = sorted(self.counts, key=lambda cid: (self.data.cards[cid]["cost"] or 0, self.data.cards[cid]["name_en"]))
+        cols, tw, th, gap, pad, top = 8, 212, 275, 12, 28, 150
+        rows = (len(cards) + cols - 1) // cols
+        w = pad * 2 + cols * tw + (cols - 1) * gap
+        h = top + rows * (th + gap) + 50
+        img = Image.new("RGB", (w, h), BG)
+        d = ImageDraw.Draw(img)
+        d.text((pad, 24), self.name.get() or "Mazo", fill=INK, font=font("seguisb.ttf", 40))
+        info = (f"{self.data.label('classes', self.class_id) if self.class_id is not None else 'Sin clase'} · "
+                f"{self.format_switch.var.get()} · {sum(self.counts.values())} cartas · {self.vials_text()}")
+        d.text((pad, 80), info, fill=MUTED, font=font("segoeui.ttf", 24))
+        types = " · ".join(f"{k}: {v}" for k, v in self.type_counts().items())
+        d.text((pad, 112), types, fill=MUTED, font=font("segoeui.ttf", 20))
+        badge = font("seguisb.ttf", 30)
+        for i, cid in enumerate(cards):
+            x, y = pad + (i % cols) * (tw + gap), top + (i // cols) * (th + gap)
+            c = self.data.cards[cid]
+            path = next((IMAGES / folder / f"{c[f'img_{lang}']}.png" for lang, folder in (("es", "es419"), ("en", "eng"))
+                         if c[f"img_{lang}"] and (IMAGES / folder / f"{c[f'img_{lang}']}.png").exists()), None)
+            if path:
+                card = Image.open(path).convert("RGBA").resize((tw, th), Image.LANCZOS)
+                img.paste(card, (x, y), card)
+            else:
+                d.rectangle((x, y, x + tw, y + th), fill=FIELD)
+                d.text((x + 10, y + 10), c["name_en"], fill=INK, font=font("segoeui.ttf", 18))
+            d.rounded_rectangle((x + tw - 66, y + th - 52, x + tw - 6, y + th - 8), 10, fill=ACCENT)
+            d.text((x + tw - 36, y + th - 30), f"×{self.counts[cid]}", fill="#ffffff", font=badge, anchor="mm")
+        d.text((w - pad, h - 24), "Spanishverse Library · de fans y para fans", fill=MUTED,
+               font=font("segoeui.ttf", 18), anchor="rm")
+        return img
+
+    def save_image(self):
+        if not self.counts:
+            return self._say("Armá el mazo primero.", self.BAD)
+        from tkinter import filedialog
+        name = re.sub(r'[<>:"/\\|?*]', "_", self.name.get().strip() or "Mazo")
+        pictures = Path.home() / "Pictures"
+        path = filedialog.asksaveasfilename(parent=self, title="Guardar el mazo como imagen", defaultextension=".png",
+                                            initialdir=str(pictures if pictures.exists() else Path.home()),
+                                            initialfile=f"{name}.png", filetypes=[("Imagen PNG", "*.png")])
+        if not path:
+            return
+        try:
+            self.deck_picture().save(path)
+        except OSError as e:
+            return messagebox.showerror("No se guardó la imagen", str(e), parent=self)
+        self._say(f"Imagen guardada en {path}")
+
+
+def hit_chance(copies, seen, deck=40, mulligan=False, hand=3):
+    """Probabilidad de tener al menos una de `copies` copias habiendo visto `seen` cartas (mano inicial incluida).
+    Con mulligan: si no está en la mano inicial se cambian las 3 (las nuevas salen del resto del mazo)."""
+    from math import comb
+    miss = lambda n, k, draw: comb(n - k, draw) / comb(n, draw) if draw <= n else 0.0
+    if copies <= 0:
+        return 0.0
+    if not mulligan:
+        return 1 - miss(deck, copies, seen)
+    rest = deck - hand
+    return 1 - miss(deck, copies, hand) * miss(rest, copies, hand) * miss(rest, copies, max(seen - hand, 0))
+
+
+class ProbabilityWindow(tk.Toplevel):
+    """«Probabilidades»: chance de tener al menos una copia de una carta del mazo en la mano, turno por turno."""
+
+    def __init__(self, builder):
+        super().__init__(builder)
+        self.b = builder
+        _dialog_base(self, "Probabilidades", 560, 540)
+        tk.Label(self, text="¿Qué chance hay de tenerla en la mano?", bg=PANEL, fg=INK,
+                 font=F("Segoe UI Semibold", 13), anchor="w").pack(fill="x")
+        tk.Label(self, text="Mano inicial de 3 cartas y 1 robo por turno (sin contar las cartas que hacen robar).",
+                 bg=PANEL, fg=MUTED, font=F(*FONT), anchor="w", wraplength=520, justify="left").pack(fill="x")
+        row = tk.Frame(self, bg=PANEL)
+        row.pack(fill="x", pady=(10, 4))
+        tk.Label(row, text="Carta:", bg=PANEL, fg=INK, font=F(*FONT)).pack(side="left", padx=(0, 6))
+        d = builder.data
+        self.options = {f"{d.cards[cid]['name_en']}  ×{n}": n for cid, n in
+                        sorted(builder.counts.items(), key=lambda kv: (d.cards[kv[0]]["cost"] or 0, d.cards[kv[0]]["name_en"]))}
+        self.options.update({f"Cualquiera de {n} cartas": n for n in (2, 3, 4, 5, 6, 9)})
+        self.choice = tk.StringVar(value=next(iter(self.options)))
+        box = ttk.Combobox(row, textvariable=self.choice, values=list(self.options), state="readonly", width=40)
+        box.pack(side="left")
+        box.bind("<<ComboboxSelected>>", lambda _: self.fill())
+        self.mulligan = tk.BooleanVar(value=True)
+        ttk.Checkbutton(self, text="En el cambio inicial (mulligan) devuelvo las 3 si no la tengo",
+                        variable=self.mulligan, command=self.fill, style="Panel.TCheckbutton").pack(anchor="w")
+        ttk.Button(self, text="Cerrar", style="Active.TButton", command=self.destroy).pack(side="bottom", anchor="e")
+        self.table = ttk.Treeview(self, columns=("turno", "vistas", "chance"), show="headings", height=11)
+        for key, text, w in (("turno", "Turno", 120), ("vistas", "Cartas vistas", 140), ("chance", "Chance", 140)):
+            self.table.heading(key, text=text)
+            self.table.column(key, width=w, anchor="center")
+        self.table.pack(fill="both", expand=True, pady=(8, 8))
+        self.fill()
+
+    def fill(self):
+        copies = self.options.get(self.choice.get(), 1)
+        self.table.delete(*self.table.get_children())
+        self.table.insert("", "end", values=("Mano inicial", 3, f"{hit_chance(copies, 3, mulligan=self.mulligan.get()):.0%}"))
+        for turn in range(1, 11):
+            seen = 3 + turn
+            self.table.insert("", "end", values=(f"Turno {turn}", seen,
+                                                 f"{hit_chance(copies, seen, mulligan=self.mulligan.get()):.0%}"))
+
+
+class CompareWindow(tk.Toplevel):
+    """«Comparar»: dos cartas lado a lado (imagen, datos y efecto). La de la derecha se elige escribiendo su nombre."""
+
+    def __init__(self, app, card_id):
+        super().__init__(app)
+        self.app = app
+        _dialog_base(self, "Comparar cartas", 1060, 820)
+        self.names = {}
+        for c in app.data.cards.values():
+            self.names.setdefault(c["name_en"], c["card_id"])
+        top = tk.Frame(self, bg=PANEL)
+        top.pack(fill="x", pady=(0, 8))
+        tk.Label(top, text="Comparar con:", bg=PANEL, fg=INK, font=F(*FONT)).pack(side="left", padx=(0, 6))
+        self.other = tk.StringVar()
+        self.box = ttk.Combobox(top, textvariable=self.other, width=44)
+        self.box.pack(side="left")
+        self.box.bind("<KeyRelease>", self._suggest)
+        self.box.bind("<<ComboboxSelected>>", lambda _: self._pick())
+        self.box.bind("<Return>", lambda _: self._pick())
+        tk.Label(top, text="(escribí parte del nombre, en inglés o en español)", bg=PANEL, fg=MUTED,
+                 font=F(*FONT)).pack(side="left", padx=8)
+        ttk.Button(top, text="Cerrar", command=self.destroy).pack(side="right")
+        cols = tk.Frame(self, bg=PANEL)
+        cols.pack(fill="both", expand=True)
+        cols.columnconfigure((0, 1), weight=1, uniform="c")
+        cols.rowconfigure(0, weight=1)
+        self.sides = [self._side(cols, i) for i in (0, 1)]
+        self.cards = [card_id, None]
+        self._render(0)
+        self._render(1)
+        self.box.focus_set()
+
+    def _side(self, parent, col):
+        t = tk.Text(parent, bg=FIELD, fg=INK, font=F(*FONT), wrap="word", relief="flat", padx=10, pady=8,
+                    highlightthickness=0, cursor="arrow", insertwidth=0)
+        t.grid(row=0, column=col, sticky="nsew", padx=(0, 6) if col == 0 else (6, 0))
+        for tag in ("imgline", "title", "sub", "chip", "h", "b", "i", "bi", "kw", "tip", "link", "note"):
+            opts = {k: v[4] for k, v in self.app.text.tag_configure(tag).items() if v[4] not in ("", None)}
+            t.tag_configure(tag, **opts)
+        t.tag_configure("diff", foreground=KW)
+        t.bind("<Key>", lambda e: self.app._readonly_key(e, t))
+        return t
+
+    def _suggest(self, event):
+        if event.keysym in ("Return", "Down", "Up", "Escape"):
+            return
+        q = App._fold(self.other.get().strip())
+        if len(q) < 2:
+            return
+        hits = [c["name_en"] + (f"  ({c['name_es']})" if c["name_es"] else "") for c in self.app.data.cards.values()
+                if c["card_id"] == self.names.get(c["name_en"]) and (q in App._fold(c["name_en"]) or q in App._fold(c["name_es"]))]
+        self.box["values"] = sorted(hits)[:40]
+
+    def _pick(self):
+        name = self.other.get().split("  (")[0].strip()
+        cid = self.names.get(name)
+        if cid is None:
+            vals = list(self.box["values"])
+            if vals:
+                cid = self.names.get(vals[0].split("  (")[0])
+        if cid is not None:
+            self.cards[1] = cid
+            self._render(0)
+            self._render(1)
+
+    def _render(self, i):
+        t, cid = self.sides[i], self.cards[i]
+        t.config(state="normal")
+        t.delete("1.0", "end")
+        if cid is None:
+            t.insert("end", "\nElegí arriba la carta para comparar.", "note")
+            return
+        d, c = self.app.data, self.app.data.cards[cid]
+        other = self.app.data.cards[self.cards[1 - i]] if self.cards[1 - i] is not None else None
+        img = self.app.load_image(c, False)
+        if img:
+            pic = tk.Label(t, image=img, bg=FIELD)
+            t.window_create("end", window=pic, pady=4)
+            t.insert("end", "\n")
+            t.tag_add("imgline", "1.0", "1.end")
+        t.insert("end", c["name_en"] + "\n", "title")
+        if c["name_es"]:
+            t.insert("end", c["name_es"] + "\n", "sub")
+        rows = [("Costo", c["cost"]), ("Ataque / Defensa", f"{c['atk']}/{c['life']}" if c["type_id"] == 1 else "—"),
+                ("Clase", d.label("classes", c["class_id"])), ("Tipo", d.label("types", c["type_id"])),
+                ("Rareza", d.label("rarities", c["rarity_id"])), ("Expansión", d.label("sets", c["set_id"]))]
+        other_rows = dict([("Costo", other["cost"]), ("Ataque / Defensa", f"{other['atk']}/{other['life']}"
+                           if other["type_id"] == 1 else "—")]) if other else {}
+        t.insert("end", "\n")
+        for label, value in rows:
+            t.insert("end", f"{label}: ", "note")
+            t.insert("end", f"{value}\n", "diff" if label in other_rows and other_rows[label] != value else ())
+        t.insert("end", "\nEFECTO\n", "h")
+        if c["skill_en"] or c["skill_es"]:
+            self.app.markup(c["skill_es"] or c.get("skill_tr") or c["skill_en"],
+                            "es" if c["skill_es"] else "tr" if c.get("skill_tr") else "en", t=t,
+                            go=lambda k, side=i: self._open(side, k))
+        else:
+            t.insert("end", "(sin efecto)", "note")
+        t.yview_moveto(0)
+
+    def _open(self, side, card_id):
+        self.cards[side] = card_id
+        self._render(0)
+        self._render(1)
 
 
 class DeckView(tk.Frame):
@@ -2121,6 +2613,13 @@ class App(tk.Tk):
         import config
         self.data = data
         self.pending = pending or []  # novedades que el usuario decidió no actualizar al abrir
+        self.favorites = load_favorites()
+        self.recent = [int(x) for x in load_settings().get("recientes", []) if int(x) in data.cards]
+        self.show_en = False  # «Ver en inglés»: el detalle muestra el texto original
+        import changes
+        self.changes = changes.load()  # «Lo nuevo» de la última actualización e historial de cambios de balance
+        self.new_ids = set(self.changes.get("nuevas", {}).get("ids", []))
+        self.balance = {int(k): v for k, v in self.changes.get("historial", {}).items()}
         self.title(f"Spanishverse Library {config.VERSION}")
         if ICON.exists():  # ícono propio en la ventana y en todas las ventanas secundarias
             self.iconbitmap(default=str(ICON))
@@ -2146,6 +2645,9 @@ class App(tk.Tk):
         self._glossary_panel()
         self.refresh()
         self.update_win = None
+        self._shortcuts()
+        self.after(1200, self._show_news_once)
+        self.after(1600, self._new_cards_notice)
 
     # ---------- aspecto ----------
     def _style(self):
@@ -2170,7 +2672,7 @@ class App(tk.Tk):
         s.map("TButton", background=[("active", LINE)])
         # Botón de filtro con algo marcado.
         s.configure("Active.TButton", background=ACCENT, foreground="#ffffff", padding=(10, 4))
-        s.map("Active.TButton", background=[("active", "#8a6fe0")])
+        s.map("Active.TButton", background=[("active", ACCENT_HOVER)])
         # Los campos un poco más claros que el fondo, para que se distingan dentro de los recuadros.
         s.configure("TCombobox", fieldbackground=FIELD, background=FIELD, foreground=INK, arrowcolor=INK)
         s.map("TCombobox", fieldbackground=[("readonly", FIELD)], foreground=[("readonly", INK)])
@@ -2402,7 +2904,7 @@ class App(tk.Tk):
         ttk.Label(self.search_box, text="Buscar", style="Muted.TLabel").pack(side="left", padx=(0, 6))
         self.search = tk.StringVar()
         self.search.trace_add("write", lambda *_: self.refresh())
-        entry = ttk.Entry(self.search_box, textvariable=self.search, width=12)
+        entry = self.search_entry = ttk.Entry(self.search_box, textvariable=self.search, width=12)
         # La búsqueda se hace sola al escribir; la lupa (o Enter) igual la ejecuta, como en cualquier buscador.
         search_now = lambda *_: (self.refresh(), entry.focus_set())
         ttk.Button(self.search_box, text="🔍", width=3, command=search_now).pack(side="right", padx=(4, 0))
@@ -2412,8 +2914,12 @@ class App(tk.Tk):
         self.entry_menu(entry)
         self.tokens = tk.BooleanVar()
         self.only_es = tk.BooleanVar()
+        self.recent_btn = ttk.Button(bar, text="🕘 Recientes ▾", command=self._recent_menu)
+        self.help_btn = ttk.Button(bar, text="Ayuda ▾", command=self._help_menu)
         self.update_btn = ttk.Button(bar, text="⟳ Actualizar", command=self.ask_update)
         self.update_btn.pack(side="right", padx=(8, 0))
+        self.help_btn.pack(side="right", padx=(8, 0))
+        self.recent_btn.pack(side="right", padx=(8, 0))
         self.update_btn.bind("<Enter>", lambda e: self.tooltip.show(
             "Hay novedades para actualizar:\n• " + "\n• ".join(self.pending) if self.pending
             else "Buscar y bajar cartas nuevas y versiones nuevas del programa",
@@ -2557,13 +3063,27 @@ class App(tk.Tk):
         regrid()
         box.on_open = regrid
 
+        self.only_fav, self.only_new, self.only_changed = tk.BooleanVar(), tk.BooleanVar(), tk.BooleanVar()
         box = self._group(flow, "Mostrar", lambda: (
             ([("Incluye fichas", lambda: self.tokens.set(False))] if self.tokens.get() else [])
-            + ([("Solo español oficial", lambda: self.only_es.set(False))] if self.only_es.get() else [])))
+            + ([("Solo español oficial", lambda: self.only_es.set(False))] if self.only_es.get() else [])
+            + ([("★ Solo favoritas", lambda: self.only_fav.set(False))] if self.only_fav.get() else [])
+            + ([("Solo lo nuevo", lambda: self.only_new.set(False))] if self.only_new.get() else [])
+            + ([("Con cambios de balance", lambda: self.only_changed.set(False))] if self.only_changed.get()
+               else [])))
         ttk.Checkbutton(box, text="Incluir fichas (tokens)", variable=self.tokens, command=self.refresh,
                         style="Panel.TCheckbutton").grid(row=1, column=0, sticky="w", pady=2)
         ttk.Checkbutton(box, text="Solo con español oficial", variable=self.only_es, command=self.refresh,
                         style="Panel.TCheckbutton").grid(row=2, column=0, sticky="w", pady=2)
+        ttk.Checkbutton(box, text="★ Solo mis favoritas", variable=self.only_fav, command=self.refresh,
+                        style="Panel.TCheckbutton").grid(row=3, column=0, sticky="w", pady=2)
+        when = self.changes.get("nuevas", {}).get("fecha", "")
+        when = f" (del {'/'.join(reversed(when.split('-')))})" if when else " (todavía no hubo)"
+        ttk.Checkbutton(box, text="🆕 Solo lo nuevo de la última actualización" + when, variable=self.only_new,
+                        command=self.refresh, style="Panel.TCheckbutton").grid(row=4, column=0, sticky="w", pady=2)
+        ttk.Checkbutton(box, text=f"Solo cartas con cambios de balance ({len(self.balance)})",
+                        variable=self.only_changed, command=self.refresh,
+                        style="Panel.TCheckbutton").grid(row=5, column=0, sticky="w", pady=2)
         self.flow = flow
         # Todos los botones con el mismo ancho fijo (el del título más largo): marcar o desmarcar
         # filtros nunca los cambia de tamaño ni de lugar.
@@ -2593,6 +3113,9 @@ class App(tk.Tk):
             v.set("")
         self.tokens.set(False)
         self.only_es.set(False)
+        self.only_fav.set(False)
+        self.only_new.set(False)
+        self.only_changed.set(False)
         self.set_var.set("Todas")
         self.tribe_var.set("Todas")
         self.kw_var.set("Todas")
@@ -2680,11 +3203,15 @@ class App(tk.Tk):
         # Ancho fijo para que entre «🔊 10/11» (hasta 11 líneas por carta) sin que el botón cambie de tamaño.
         self.voice_btn = ttk.Button(nav, text="🔊", width=9, command=self.play_voice, state="disabled")
         self.voice_btn.pack(side="right", padx=(0, 6))
+        self.play_all_btn = ttk.Button(nav, text="▶ Todas", width=8, command=self.play_all, state="disabled")
+        self.play_all_btn.pack(side="right", padx=(0, 6))
+        self.play_all_job = None
         self.assist_btn = ttk.Button(nav, text="🎙", width=3, command=self.open_voice_assistant)
         self.assist_btn.pack(side="right", padx=(0, 6))
         if not voices:
             self.assist_btn.config(state="disabled")
         for b, tip in ((self.voice_btn, "Escuchar la siguiente línea de voz"),
+                       (self.play_all_btn, "Escuchar todas las líneas de voz de la carta, una detrás de otra"),
                        (self.assist_btn, "Asociar la voz de esta carta (asistente)")):
             b.bind("<Enter>", lambda e, t=tip, w=b: self.tooltip.show(t, w.winfo_rootx(), w.winfo_rooty() + w.winfo_height() - 12))
             b.bind("<Leave>", lambda e: self.tooltip.hide())
@@ -2702,7 +3229,7 @@ class App(tk.Tk):
         t.tag_configure("imgline", justify="center")
         t.tag_configure("title", font=F("Segoe UI Semibold", 15))
         t.tag_configure("sub", foreground=MUTED)
-        t.tag_configure("chip", foreground=INK, background="#2a2833")
+        t.tag_configure("chip", foreground=INK, background=FIELD)
         t.tag_configure("h", font=F("Segoe UI Semibold", 9), foreground=MUTED, spacing1=10, spacing3=3)
         t.tag_configure("b", font=F("Segoe UI Semibold", 10))
         t.tag_configure("i", font=F("Segoe UI", 10, "italic"))
@@ -2955,6 +3482,12 @@ class App(tk.Tk):
             return False
         if self.only_es.get() and not c["has_es"]:
             return False
+        if self.only_fav.get() and c["card_id"] not in self.favorites:
+            return False
+        if self.only_new.get() and c["card_id"] not in self.new_ids:
+            return False
+        if self.only_changed.get() and c["card_id"] not in self.balance:
+            return False
         for vars_, value in ((self.class_vars, c["class_id"]), (self.cost_vars, min(c["cost"] or 0, 10)),
                              (self.type_vars, c["type_id"]), (self.rarity_vars, c["rarity_id"])):
             chosen = {k for k, v in vars_.items() if v.get() == 1}    # visto: solo esto
@@ -2980,8 +3513,11 @@ class App(tk.Tk):
                 return False
             if hi is not None and (c[stat] or 0) > hi:
                 return False
-        words = self.search.get().lower().split()
-        return all(w in c["haystack"] for w in words)
+        query = self.search.get().strip().lower()
+        for prefix, field in (("ilustrador:", "illustrator"), ("voz:", "cv")):
+            if query.startswith(prefix):
+                return (c[field] or "").lower() == query[len(prefix):].strip()
+        return all(w in c["haystack"] for w in query.split())
 
     def _gen_matches(self, pairs):
         """Filtro "Trae o crea cartas". ☑ = alguno de los marcados; ☒ = ninguno de esos.
@@ -3282,17 +3818,24 @@ class App(tk.Tk):
         evo = self.show_evo if evo is None else evo
         if card_id is None:
             return
+        path = self.zoom_path(card_id, evo)
+        if path:
+            # Galería: con las flechas se recorren las cartas de la lista, en el orden en que se ven.
+            ids = [int(r) for r in self.tree.get_children() if r.isdigit()] if not self._deck_shown() else []
+            ImageZoom(self, path, gallery=(ids, ids.index(card_id)) if card_id in ids and len(ids) > 1 else None)
+
+    def zoom_path(self, card_id, evo):
+        """La ilustración sin marco si está bajada; si no, la imagen oficial."""
         art = ART / f"{card_id + (1 if evo else 0)}.png"
         if art.exists():
-            ImageZoom(self, art)
-            return
+            return art
         c = self.data.cards[card_id]
         for lang, folder in (("es", "es419"), ("en", "eng")):
             h = c[f"evo_img_{lang}" if evo else f"img_{lang}"]
             path = IMAGES / folder / f"{h}.png" if h else None
             if path is not None and path.exists():
-                ImageZoom(self, path)
-                return
+                return path
+        return None
 
     def update_image(self):
         c = self.data.cards[self.current]
@@ -3327,6 +3870,8 @@ class App(tk.Tk):
         heard = self.voice_pos.get((self.current, self.show_evo), 0)
         self.voice_btn.config(state="normal" if lines else "disabled",
                               text=f"🔊 {heard}/{len(lines)}" if lines else "🔊")
+        self.play_all_btn.config(state="normal" if lines else "disabled",
+                                 text="■ Parar" if self.play_all_job else "▶ Todas")
         # 🎙 solo con una carta seleccionada que tenga audio en el juego (y si las voces están disponibles).
         card = self.data.cards.get(self.current) if self.current is not None else None
         self.assist_btn.config(state="normal" if voices and card and self.card_has_audio(card) else "disabled")
@@ -3350,10 +3895,88 @@ class App(tk.Tk):
         voices.play(path)  # con un silencio adelante si el audio estuvo quieto (auriculares Bluetooth)
         self._update_voice_button()
 
+    def play_all(self):
+        """«▶ Todas»: todas las líneas de la carta seguidas (las normales y después las de evolucionada).
+        Apretar otra vez («■ Parar») o abrir otra carta las corta."""
+        if self.play_all_job:
+            return self.stop_all()
+        entry = self.voice_map.get(self.current) if self.current else None
+        if not entry:
+            return
+        queue_ = [voices.line_path(line, entry["bank"]) for line in entry["normal"] + entry.get("evo", [])]
+        self._play_next(self.current, queue_)
+
+    def _play_next(self, card_id, queue_):
+        import wave
+        if self.current != card_id or not queue_:
+            return self.stop_all(silence=False)
+        path = Path(queue_.pop(0))
+        try:
+            with wave.open(str(path)) as w:
+                length = w.getnframes() / w.getframerate()
+        except (OSError, EOFError, wave.Error):
+            length = 0
+        if length:
+            voices.play(path)
+        self.play_all_job = self.after(int(length * 1000) + 500, self._play_next, card_id, queue_)
+        self._update_voice_button()
+
+    def stop_all(self, silence=True):
+        if self.play_all_job:
+            self.after_cancel(self.play_all_job)
+        self.play_all_job = None
+        if silence:
+            import winsound
+            winsound.PlaySound(None, 0)
+        if self.current is not None:
+            self._update_voice_button()
+
     def open_voice_assistant(self):
         if self.current is None:
             return
         VoiceAssistant(self, self.current)
+
+    def _shortcuts(self):
+        """Atajos: Ctrl+F buscar, Ctrl+D armar mazo, Ctrl+G glosario, Ctrl+U actualizar, Alt+← volver,
+        Ctrl+E ver evolucionada, F1 manual."""
+        def focus_search(_=None):
+            if self._deck_shown():
+                self.close_deck_builder()
+            self.search_entry.focus_set()
+            self.search_entry.select_range(0, "end")
+            return "break"
+        keys = {"<Control-f>": focus_search, "<Control-F>": focus_search,
+                "<Control-d>": lambda _: self.open_deck_builder(), "<Control-D>": lambda _: self.open_deck_builder(),
+                "<Control-g>": lambda _: self.toggle_glossary(), "<Control-G>": lambda _: self.toggle_glossary(),
+                "<Control-u>": lambda _: self.ask_update(), "<Control-U>": lambda _: self.ask_update(),
+                "<Control-e>": lambda _: self.current is not None and self.toggle_evo(),
+                "<Control-E>": lambda _: self.current is not None and self.toggle_evo(),
+                "<Alt-Left>": lambda _: self.go_back(), "<F1>": lambda _: open_manual()}
+        for key, fn in keys.items():
+            self.bind_all(key, fn)
+        self.bind_all("<Control-v>", self._paste_deck, add="+")
+        self.bind_all("<Control-V>", self._paste_deck, add="+")
+
+    def _paste_deck(self, _=None):
+        """Ctrl+V fuera de un cuadro de texto: si lo copiado es un código de mazo o un enlace de la página oficial,
+        se abre en el armador de mazos."""
+        w = self.focus_get()
+        if w is None or w.winfo_class() in ("Entry", "TEntry", "TCombobox", "Spinbox", "TSpinbox") or (
+                w.winfo_class() == "Text" and w is not self.text):
+            return
+        try:
+            clip = self.clipboard_get().strip()
+        except tk.TclError:
+            return
+        if len(clip) > 2000 or not (decks.parse_hash(clip) or decks.looks_like_code(clip)):
+            return
+        if not decks.parse_hash(clip) and not messagebox.askyesno(
+                "Cargar un mazo", f"¿Cargar en el armador el mazo del código «{clip}»?", parent=self):
+            return
+        if not self._deck_shown():
+            self.open_deck_builder()
+        self.deck_view.import_code(clip)
+        return "break"
 
     def _mark_update_button(self):
         """Con novedades sin actualizar, el botón se ve violeta y con un punto."""
@@ -3420,11 +4043,14 @@ class App(tk.Tk):
         self.evo_btn.config(state="disabled")
         # Sin carta seleccionada no hay nada que escuchar ni a qué asociarle una voz.
         self.voice_btn.config(state="disabled", text="🔊")
+        self.play_all_btn.config(state="disabled", text="▶ Todas")
         self.assist_btn.config(state="disabled")
 
     def show(self, card_id, remember=True, from_list=False):
         if remember and self.current and self.current != card_id:
             self.history.append(self.current)
+        if self.play_all_job and card_id != self.current:
+            self.stop_all()
         self.current = card_id
         self.show_evo = False
         self.voice_pos.clear()  # al abrir una carta (otra o la misma de nuevo) las voces arrancan de la línea 1
@@ -3483,6 +4109,13 @@ class App(tk.Tk):
         # Botones que quedan apretados: en la lista, quién puede traer esta carta / qué puede traer esta carta.
         self.creators_var = self.creations_var = None
         buttons = []
+        fav = card_id in self.favorites
+        buttons.append(ttk.Button(t, text="★ Favorita" if fav else "☆ Favorita", cursor="hand2",
+                                  style="Active.TButton" if fav else "TButton",
+                                  command=lambda: self.toggle_favorite(card_id)))
+        buttons.append(ttk.Button(t, text="Ver en español" if self.show_en else "Ver en inglés", cursor="hand2",
+                                  command=self.toggle_english))
+        buttons.append(ttk.Button(t, text="↔ Comparar", cursor="hand2", command=lambda: CompareWindow(self, card_id)))
         for kind, label, finder in (("creators", "⤴ Ver creadoras", d.creators_of),
                                     ("creations", "⤵ Ver lo que trae", d.creations_of)):
             sure, possible = finder(card_id)
@@ -3502,6 +4135,7 @@ class App(tk.Tk):
                 t.window_create("end", window=b, pady=2, padx=(0))
                 t.insert("end", "  ")
             t.insert("end", "\n")
+        self._remember_recent(card_id)
 
         en_only = self.section("EFECTO", c["skill_en"], c["skill_es"], c.get("skill_tr"))
         for e in c["specific"]:
@@ -3512,6 +4146,7 @@ class App(tk.Tk):
         if en_only:
             t.insert("end", "\nTexto en inglés con las palabras clave en español. Pasá el mouse sobre ellas "
                             "para ver el término original.\n", "note")
+        self._balance_history(card_id)
 
         # "Crea" = lo que su propio efecto crea; el resto de la lista oficial son cartas relacionadas
         # (en cadena o mencionadas), que esta carta no crea.
@@ -3533,7 +4168,7 @@ class App(tk.Tk):
 
         # Oficial en español; si no hay, la traducción propia (tools/translate_lore.py); si tampoco, el inglés.
         langs = {q[0] for q in c["qa"]}
-        qa_lang = next(lang for lang in ("es", "tr", "en") if lang in langs or lang == "en")
+        qa_lang = "en" if self.show_en else next(lang for lang in ("es", "tr", "en") if lang in langs or lang == "en")
         qa = [q for q in c["qa"] if q[0] == qa_lang]
         if qa:
             t.insert("end", "\nPREGUNTAS OFICIALES\n", "h")
@@ -3545,17 +4180,152 @@ class App(tk.Tk):
         if c["type_id"] == 1:
             self.section("AMBIENTACIÓN EVOLUCIONADA", c["evo_flavour_en"], c["evo_flavour_es"],
                           c.get("evo_flavour_tr"))
-        t.insert("end", f"\n\nIlustración: {c['illustrator'] or '—'} · Voz: {c['cv'] or '—'} · ID {c['card_id']}\n", "note")
+        # Ilustrador y voz: un clic busca todas sus cartas.
+        t.insert("end", "\n\nIlustración: ", "note")
+        self._person_link(c["illustrator"], "ilustrador")
+        t.insert("end", " · Voz: ", "note")
+        self._person_link(c["cv"], "voz")
+        t.insert("end", f" · ID {c['card_id']}\n", "note")
         t.yview_moveto(0)
 
+    def _balance_history(self, card_id):
+        """«CAMBIOS DE BALANCE»: qué cambió Cygames en esta carta y cuándo (lo anota el actualizador)."""
+        entries = self.balance.get(card_id)
+        if not entries:
+            return
+        t = self.text
+        t.insert("end", "\nCAMBIOS DE BALANCE\n", "h")
+        names = {"cost": "Costo", "atk": "Ataque", "life": "Defensa"}
+        for e in reversed(entries):
+            diff = e["cambios"]
+            parts = [f"{names[k]} {diff[k][0]} → {diff[k][1]}" for k in ("cost", "atk", "life") if k in diff]
+            if "skill_en" in diff or "skill_es" in diff:
+                parts.append("efecto cambiado")
+            t.insert("end", f"• {'/'.join(reversed(e['fecha'].split('-')))}: ", "b")
+            t.insert("end", " · ".join(parts) + "\n")
+            old = diff.get("skill_es", [None])[0] or diff.get("skill_en", [None])[0]
+            if old:
+                t.insert("end", "Antes decía:\n", "note")
+                self.markup(old, "es" if diff.get("skill_es", [None])[0] else "en")
+                t.insert("end", "\n")
+
+    def _new_cards_notice(self):
+        """Después de una actualización que trajo cartas, se ofrece verlas (una sola vez por actualización)."""
+        when = self.changes.get("nuevas", {}).get("fecha")
+        if not when or not self.new_ids or load_settings().get("nuevas_vistas") == when:
+            return
+        save_settings(nuevas_vistas=when)
+        n = len(self.new_ids)
+        if messagebox.askyesno("Lo nuevo", f"La última actualización trajo {n} carta{'s' * (n > 1)} "
+                               f"nueva{'s' * (n > 1)}. ¿Querés verla{'s' * (n > 1)}?\n\n(Después las encontrás en «Mostrar → Solo lo nuevo».)", parent=self):
+            self.reset()
+            self.only_new.set(True)
+            self.refresh()
+
+    def _person_link(self, name, prefix):
+        t = self.text
+        if not name:
+            t.insert("end", "—", "note")
+            return
+        self.n_tags += 1
+        tag = f"link_{self.n_tags}"
+        t.insert("end", name, ("note", "link", tag))
+        t.tag_bind(tag, "<Button-1>", lambda _: self.search_person(prefix, name))
+        t.tag_bind(tag, "<Enter>", lambda e: (t.config(cursor="hand2"), self.tooltip.show(
+            f"Ver todas las cartas de {name}", e.x_root, e.y_root + 10)))
+        t.tag_bind(tag, "<Leave>", lambda _: (t.config(cursor="xterm"), self.tooltip.hide()))
+
+    def search_person(self, prefix, name):
+        """Todas las cartas de un ilustrador o de una voz (en el buscador: «ilustrador: nombre»)."""
+        if self._deck_shown():
+            self.close_deck_builder()
+        self.search.set(f"{prefix}: {name}")
+
+    def toggle_favorite(self, card_id):
+        self.favorites.symmetric_difference_update({card_id})
+        save_favorites(self.favorites)
+        self.show(card_id, remember=False)
+        if self.only_fav.get():
+            self.refresh()
+
+    def toggle_english(self):
+        self.show_en = not self.show_en
+        if self.current is not None:
+            self.show(self.current, remember=False)
+
+    def _remember_recent(self, card_id):
+        self.recent = [card_id] + [c for c in self.recent if c != card_id][:19]
+        save_settings(recientes=self.recent)
+
+    # ---------- menú «Ayuda» ----------
+    def _help_menu(self):
+        menu = tk.Menu(self, tearoff=0, bg=PANEL, fg=INK, activebackground=ACCENT, activeforeground="#ffffff",
+                       font=F(*FONT))
+        menu.add_command(label="Manual del programa   (F1)", command=open_manual)
+        menu.add_command(label="Atajos de teclado", command=lambda: messagebox.showinfo("Atajos de teclado", SHORTCUTS_TEXT,
+                                                                                       parent=self))
+        menu.add_command(label="Novedades de la versión", command=lambda: NewsWindow(self))
+        menu.add_separator()
+        menu.add_command(label="Reportar un error…", command=lambda: ReportWindow(self))
+        menu.add_command(label="Sugerir una corrección de esta carta…",
+                         command=lambda: ReportWindow(self, self.current),
+                         state="normal" if self.current is not None else "disabled")
+        menu.add_separator()
+        menu.add_command(label="Copias de seguridad…", command=lambda: BackupsWindow(self))
+        menu.add_command(label="Tema claro" if THEME == "oscuro" else "Tema oscuro", command=self._toggle_theme)
+        menu.add_separator()
+        menu.add_command(label="Acerca de Spanishverse Library", command=self._about)
+        b = self.help_btn
+        menu.tk_popup(b.winfo_rootx(), b.winfo_rooty() + b.winfo_height())
+
+    def _toggle_theme(self):
+        new = "claro" if THEME == "oscuro" else "oscuro"
+        save_settings(tema=new)
+        if messagebox.askyesno("Tema", f"El tema {new} se aplica al reiniciar el programa. ¿Reiniciar ahora?",
+                               parent=self):
+            restart_program(self)
+
+    def _about(self):
+        import config
+        messagebox.showinfo("Acerca de", f"Spanishverse Library {config.VERSION}\n\nBiblioteca de cartas de "
+                            "Shadowverse: Worlds Beyond en español.\nDe fans y para fans: libre y 100 % gratuito.\n\n"
+                            f"github.com/{config.GITHUB_USER}/{config.GITHUB_REPO}\n\nShadowverse: Worlds Beyond © "
+                            "Cygames, Inc. Este programa no está afiliado a Cygames.", parent=self)
+
+    def _show_news_once(self):
+        """La primera vez que se abre una versión nueva, se muestran sus novedades."""
+        import config
+        seen = load_settings().get("version_vista")
+        if seen != config.VERSION:
+            save_settings(version_vista=config.VERSION)
+            if seen:  # (a quien instala por primera vez no se le muestran)
+                NewsWindow(self, since=seen)
+
+    def _recent_menu(self):
+        """«🕘 Recientes»: las últimas cartas que se abrieron."""
+        menu = tk.Menu(self, tearoff=0, bg=PANEL, fg=INK, activebackground=ACCENT, activeforeground="#ffffff",
+                       font=F(*FONT))
+        for cid in self.recent:
+            c = self.data.cards[cid]
+            menu.add_command(label=c["name_en"] + (f"  ({c['name_es']})" if c["name_es"] else ""),
+                             command=lambda k=cid: self.show(k))
+        if not self.recent:
+            menu.add_command(label="(todavía no abriste ninguna carta)", state="disabled")
+        b = self.recent_btn
+        menu.tk_popup(b.winfo_rootx(), b.winfo_rooty() + b.winfo_height())
+
     def section(self, title, en, es, tr=None):
-        """Texto oficial en español; si no hay, la traducción propia; si tampoco, el inglés."""
+        """Texto oficial en español; si no hay, la traducción propia; si tampoco, el inglés.
+        Con «Ver en inglés», el original."""
         if not en and not es:
             return False
         self.text.insert("end", "\n" + title + "\n", "h")
-        self.markup(es or tr or en, "es" if es else "tr" if tr else "en")
+        if self.show_en and en:
+            self.markup(en, "orig")  # el original tal cual, también las palabras clave
+        else:
+            self.markup(es or tr or en, "es" if es else "tr" if tr else "en")
         self.text.insert("end", "\n")
-        return not (es or tr)
+        return not (es or tr) and not self.show_en
 
     def link(self, text, card_id, extra_tags=(), t=None, go=None):
         """Nombre de carta con enlace. t / go: otro cuadro de texto y qué hacer al hacer clic (el detalle de la
@@ -3622,7 +4392,7 @@ class App(tk.Tk):
 
     def markup(self, source, lang, t=None, go=None):
         """Inserta texto con el marcado del juego (<color=Keyword>, <b>, <i>, <hr>).
-        lang: "en" (inglés), "es" (oficial en español) o "tr" (traducción propia).
+        lang: "en" (inglés, palabras clave en español), "orig" (inglés tal cual), "es" (oficial en español) o "tr" (traducción propia).
         t / go: otro cuadro de texto y adónde llevan sus enlaces (ver link)."""
         t, bold, italic, in_kw, kw_parts = t or self.text, False, False, False, []
         translated_prev = False  # para descartar terminaciones sueltas como la "d" de "Fuse"+"d"
@@ -3642,10 +4412,10 @@ class App(tk.Tk):
                 word = "".join(kw_parts)
                 key = word.strip().lower()
                 # En la traducción propia los nombres de cartas siguen en inglés.
-                names = self.data.by_name_en if lang in ("en", "tr") else self.data.by_name_es
+                names = self.data.by_name_en if lang in ("en", "tr", "orig") else self.data.by_name_es
                 target = names.get(key)
                 es = self.data.kw_es.get(key) if lang == "en" else None
-                en_key = key if lang == "en" else self.data.kw_en_by_es.get(key)
+                en_key = key if lang in ("en", "orig") else self.data.kw_en_by_es.get(key)
                 if translated_prev and len(key) <= 2 and key.isalpha():
                     pass  # terminación inglesa pegada a una palabra ya traducida
                 elif target:
@@ -3697,6 +4467,8 @@ def main():
         return
     # Pantalla de inicio: el programa se abre solo si está todo al día (o si el usuario elige usarlo sin conexión).
     start = StartScreen(auto_update="--actualizar" in sys.argv)
+    import updater
+    start.after(500, updater.mark_started)  # abrió bien: si viene de instalar una versión nueva, no se vuelve atrás
     start.mainloop()
     if start.result != "abrir" or not DB.exists():
         return
@@ -3762,7 +4534,7 @@ class StartScreen(tk.Tk):
 
     def _button(self, text, command, primary=False):
         b = tk.Button(self.buttons, text=text, command=command, bg=ACCENT if primary else PANEL,
-                      fg="#ffffff" if primary else INK, activebackground="#8a6fe0" if primary else LINE,
+                      fg="#ffffff" if primary else INK, activebackground=ACCENT_HOVER if primary else LINE,
                       activeforeground="#ffffff" if primary else INK, **self.BTN)
         b.pack(side="left", padx=6)
         return b

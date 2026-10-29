@@ -1,0 +1,31 @@
+"""Novedades de cada versión, para la ventana «Novedades de la versión» (se muestra sola la primera vez que se abre
+una versión nueva). La más nueva va primero."""
+NOVEDADES = [
+    ("1.1.0", [
+        "Menú «Ayuda»: manual, atajos de teclado, reportar un error, sugerir una corrección y copias de seguridad.",
+        "★ Favoritas: marcá cartas y filtralas con «Mostrar → Solo mis favoritas».",
+        "🕘 Recientes: las últimas cartas que abriste, a un clic.",
+        "Clic en el ilustrador o en la voz de una carta: todas sus cartas.",
+        "«Ver en inglés»: el texto original de la carta, con un clic.",
+        "Atajos: Ctrl+F buscar, Ctrl+D armar mazo, Ctrl+G glosario, Ctrl+U actualizar, Ctrl+E evolucionada, "
+        "Alt+← volver, F1 manual.",
+        "Copia de seguridad automática de tus mazos, favoritas y voces antes de cada actualización.",
+        "«Lo nuevo»: después de actualizar, las cartas que llegaron, a un clic.",
+        "Historial de cambios de balance: si Cygames cambia una carta, se ve qué cambió y cuándo.",
+        "Armador de mazos: guardar el mazo como imagen, calculadora de probabilidades y pegar códigos o enlaces.",
+        "Comparar dos cartas lado a lado.",
+        "Galería: en el visor de ilustraciones, flechas para pasar de carta y modo presentación.",
+        "▶ Reproducir todas las voces de una carta seguidas.",
+        "Tema claro (en «Ayuda → Tema»).",
+        "Si una versión nueva no llega a abrir, el programa vuelve solo a la anterior.",
+    ]),
+    ("1.0.8", ["Al instalar una versión nueva ya no aparece la ventana de terminal.",
+               "En «Ver mazo», las voces vuelven a la primera frase al cambiar de carta."]),
+    ("1.0.7", ["«Ver mazo», creadoras y lo que crea: cuadrícula fluida, sin franjas ni cartas que desaparecen."]),
+    ("1.0.6", ["«Actualizar» solo baja o rehace lo que cambió: sin novedades tarda unos segundos.",
+               "La carpeta del juego se elige en la pantalla de inicio o en el asistente de voces."]),
+    ("1.0.5", ["El aviso de versión nueva aparece enseguida.", "«Iniciar sin actualizar» y botón «Actualizar» marcado.",
+               "La versión se ve arriba y en el título de la ventana."]),
+    ("1.0.4", ["Creadoras y lo que trae dentro del armador de mazos, con − / + para agregarlas."]),
+    ("1.0.3", ["Pantalla de inicio: primera descarga obligatoria, después actualizar es opcional y funciona sin internet."]),
+]
