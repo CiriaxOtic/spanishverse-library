@@ -44,6 +44,8 @@ BG, PANEL, INK, MUTED, LINE = "#15141a", "#1f1e26", "#ecebf0", "#a09fab", "#3432
 FIELD = "#2a2833"
 ACCENT, KW, KW_BG, LINK ="#a48cf0", "#f3c565", "#3a2f17", "#8fb4ff"
 ACCENT_HOVER, BAD = "#8a6fe0", "#e06c6c"
+# Botones, barras y campos: su fondo, al pasar el mouse y su borde (en el oscuro, como siempre).
+BTN, BTN_HOVER, EDGE, TRACK = PANEL, LINE, LINE, FIELD  # TRACK: interruptor, deslizador y − / + apagados
 
 
 def _chosen_theme():
@@ -55,11 +57,14 @@ def _chosen_theme():
 
 THEME = _chosen_theme()  # «Ayuda → Tema claro / oscuro» (se aplica al reiniciar el programa)
 if THEME == "claro":
-    # Gris claro (no blanco): descansa la vista.
-    BG, PANEL, INK, MUTED, LINE = "#c9c7cf", "#d8d6dd", "#1b1922", "#4a4755", "#a9a6b2"
-    FIELD = "#c2c0c9"
-    ACCENT, KW, KW_BG, LINK = "#6248c4", "#7a4e00", "#e6d5ab", "#1f4fb0"
-    ACCENT_HOVER, BAD = "#5f45bd", "#c43c3c"
+    # Grises medios (nada blanco), en capas: fondo, recuadros, campos para escribir y botones, cada uno de otro
+    # tono, y botones, campos y barras con borde oscuro para que se distingan de lo que tienen atrás.
+    BG, PANEL, INK, MUTED, LINE = "#aeacb5", "#bfbdc6", "#15131b", "#3a3744", "#8e8b99"
+    FIELD = "#c9c7cf"
+    BTN, BTN_HOVER, EDGE = "#9895a3", "#878494", "#57546a"
+    TRACK = BTN
+    ACCENT, KW, KW_BG, LINK = "#5a3fbf", "#6a4200", "#d9c48f", "#173f99"
+    ACCENT_HOVER, BAD = "#4a31a8", "#a82828"
 FONT = ("Segoe UI", 10)
 # Carpetas de imágenes en orden de preferencia: normalmente en español; con «Ver en inglés», en inglés.
 IMAGE_ORDER = {False: (("es", "es419"), ("en", "eng")), True: (("en", "eng"), ("es", "es419"))}
@@ -394,12 +399,12 @@ class Switch(tk.Frame):
         is_on = self.var.get() == self.on
         c = self.canvas
         c.delete("all")
-        track = ACCENT if is_on else FIELD
-        c.create_oval(1, 1, 19, 19, fill=track, outline=LINE)
-        c.create_oval(21, 1, 39, 19, fill=track, outline=LINE)
+        track = ACCENT if is_on else TRACK
+        c.create_oval(1, 1, 19, 19, fill=track, outline=EDGE)
+        c.create_oval(21, 1, 39, 19, fill=track, outline=EDGE)
         c.create_rectangle(10, 1, 30, 19, fill=track, outline="")
-        c.create_line(10, 1, 30, 1, fill=LINE)
-        c.create_line(10, 19, 30, 19, fill=LINE)
+        c.create_line(10, 1, 30, 1, fill=EDGE)
+        c.create_line(10, 19, 30, 19, fill=EDGE)
         x = 22 if is_on else 3
         c.create_oval(x, 3, x + 15, 17, fill="#ffffff" if is_on else MUTED, outline="")
         self.left.config(fg=MUTED if is_on else INK)
@@ -439,7 +444,7 @@ class SizeSlider(tk.Frame):
         c, y = self.canvas, self.H / 2
         i = FONT_SCALES.index(self.var.get())
         c.delete("all")
-        c.create_line(self._x(0), y, self._x(len(FONT_SCALES) - 1), y, fill=FIELD, width=4, capstyle="round")
+        c.create_line(self._x(0), y, self._x(len(FONT_SCALES) - 1), y, fill=TRACK, width=4, capstyle="round")
         c.create_line(self._x(0), y, self._x(i), y, fill=ACCENT, width=4, capstyle="round")
         for k in range(len(FONT_SCALES)):
             x = self._x(k)
@@ -1428,7 +1433,7 @@ class FastScrollbar(tk.Canvas):
         self._grab = None  # al arrastrar la barra: dónde se la agarró
         self._repeat = None
         self._hover = False
-        self.thumb = self.create_rectangle(0, 0, 0, 0, fill=PANEL, outline=LINE)
+        self.thumb = self.create_rectangle(0, 0, 0, 0, fill=BTN, outline=EDGE)
         self.arrows = [self.create_polygon(0, 0, 0, 0, 0, 0, fill=INK, outline="") for _ in range(2)]
         self.bind("<Configure>", lambda e: self._paint())
         self.bind("<Button-1>", self._press)
@@ -1459,7 +1464,7 @@ class FastScrollbar(tk.Canvas):
         box = (2, a, s - 2, b) if self.vertical else (a, 2, b, s - 2)
         self.coords(self.thumb, *box)
         self.itemconfigure(self.thumb, state="hidden" if full else "normal",
-                           fill=LINE if self._grab is not None or self._hover else PANEL)
+                           fill=BTN_HOVER if self._grab is not None or self._hover else BTN)
         far = (self.winfo_height() if self.vertical else self.winfo_width())
         m, h = s / 2, 3.5
         if self.vertical:
@@ -2985,8 +2990,8 @@ class DeckView(tk.Frame):
                                              ("+", x0 + tile_w - self.PAD - bw,
                                               have < limit and not full_deck and not b.cannot_add(cid), 1)):
                 btag = f"b{delta}_{cid}"
-                c.create_rectangle(bx, cy - bh / 2, bx + bw, cy + bh / 2, fill=FIELD if enabled else BG,
-                                   outline=LINE, tags=(btag,))
+                c.create_rectangle(bx, cy - bh / 2, bx + bw, cy + bh / 2, fill=TRACK if enabled else BG,
+                                   outline=EDGE if enabled else LINE, tags=(btag,))
                 c.create_text(bx + bw / 2, cy, text=sign, fill=INK if enabled else LINE,
                               font=F("Segoe UI Semibold", 13), tags=(btag,))
                 if enabled:
@@ -3246,6 +3251,9 @@ class App(tk.Tk):
 
     # ---------- aspecto ----------
     def _style(self):
+        # En el tema claro, botones, campos y casillas con borde oscuro y sin brillo (el oscuro queda como siempre).
+        light = THEME == "claro"
+        edged = lambda fill: dict(bordercolor=EDGE, lightcolor=fill, darkcolor=fill) if light else {}
         s = ttk.Style(self)
         s.theme_use("clam")
         s.configure(".", background=BG, foreground=INK, fieldbackground=PANEL, font=F(*FONT), bordercolor=LINE)
@@ -3255,32 +3263,37 @@ class App(tk.Tk):
         s.configure("Muted.TLabel", background=BG, foreground=MUTED)
         s.configure("PanelMuted.TLabel", background=PANEL, foreground=MUTED)
         # Botón de "Ver creadoras": se ve apretado (violeta) mientras está activo.
-        s.configure("Creators.Toolbutton", background=FIELD, foreground=INK, padding=(10, 4), relief="raised",
-                    borderwidth=1, bordercolor=LINE)
-        s.map("Creators.Toolbutton", background=[("selected", ACCENT), ("active", LINE)],
+        s.configure("Creators.Toolbutton", background=BTN if light else FIELD, foreground=INK, padding=(10, 4), relief="raised",
+                    borderwidth=1, **{"bordercolor": LINE, **edged(BTN)})
+        s.map("Creators.Toolbutton", background=[("selected", ACCENT), ("active", BTN_HOVER)],
               foreground=[("selected", "#ffffff")], relief=[("selected", "sunken")])
         s.configure("Panel.TCheckbutton", background=PANEL, foreground=INK)
         s.map("Panel.TCheckbutton", background=[("active", PANEL)], indicatorcolor=[("selected", ACCENT), ("!selected", FIELD)])
         s.configure("TCheckbutton", background=BG, foreground=INK)
-        s.map("TCheckbutton", background=[("active", BG)], indicatorcolor=[("selected", ACCENT), ("!selected", PANEL)])
-        s.configure("TButton", background=PANEL, foreground=INK, padding=(10, 4))
-        s.map("TButton", background=[("active", LINE)])
+        s.map("TCheckbutton", background=[("active", BG)], indicatorcolor=[("selected", ACCENT), ("!selected", FIELD if light else PANEL)])
+        s.configure("TButton", background=BTN, foreground=INK, padding=(10, 4), **edged(BTN))
+        s.map("TButton", background=[("active", BTN_HOVER)],
+              **(dict(lightcolor=[("active", BTN_HOVER)], darkcolor=[("active", BTN_HOVER)],
+                      foreground=[("disabled", MUTED)]) if light else {}))
         # Botón de filtro con algo marcado.
-        s.configure("Active.TButton", background=ACCENT, foreground="#ffffff", padding=(10, 4))
+        s.configure("Active.TButton", background=ACCENT, foreground="#ffffff", padding=(10, 4), **edged(ACCENT))
         s.map("Active.TButton", background=[("active", ACCENT_HOVER)])
         # Los campos un poco más claros que el fondo, para que se distingan dentro de los recuadros.
-        s.configure("TCombobox", fieldbackground=FIELD, background=FIELD, foreground=INK, arrowcolor=INK)
+        s.configure("TCombobox", fieldbackground=FIELD, background=FIELD if not light else BTN, foreground=INK, arrowcolor=INK, **edged(FIELD))
         s.map("TCombobox", fieldbackground=[("readonly", FIELD)], foreground=[("readonly", INK)])
         self.option_add("*TCombobox*Listbox.background", PANEL)
         self.option_add("*TCombobox*Listbox.foreground", INK)
-        s.configure("TEntry", fieldbackground=FIELD, foreground=INK, insertcolor=INK, padding=4)
-        s.configure("TSpinbox", fieldbackground=FIELD, foreground=INK, arrowcolor=INK)
+        s.configure("TEntry", fieldbackground=FIELD, foreground=INK, insertcolor=INK, padding=4, **edged(FIELD))
+        s.configure("TSpinbox", fieldbackground=FIELD, foreground=INK, arrowcolor=INK, **edged(FIELD))
         s.configure("Treeview", background=PANEL, fieldbackground=PANEL, foreground=INK, rowheight=round(24 * _font_scale[0]),
                     borderwidth=0)
         s.map("Treeview", background=[("selected", ACCENT)], foreground=[("selected", "#ffffff")])
         s.configure("Treeview.Heading", background=BG, foreground=MUTED, relief="flat")
         s.map("Treeview.Heading", background=[("active", LINE)])
         s.configure("Vertical.TScrollbar", background=PANEL, troughcolor=BG, arrowcolor=INK)
+        if light:
+            for name in ("TCheckbutton", "Panel.TCheckbutton"):  # la casilla con borde, para que se vea vacía
+                s.configure(name, indicatorbackground=FIELD, bordercolor=EDGE)
 
     # ---------- filtros ----------
     # ---------- filtros: una fila de botones desplegables ----------
