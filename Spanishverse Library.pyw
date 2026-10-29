@@ -482,6 +482,9 @@ class VoiceAssistant(tk.Toplevel):
         ttk.Button(bottom, text="Por defecto", command=self.restore_default,
                    state="normal" if changed else "disabled").pack(side="left")
         ttk.Button(bottom, text="Cerrar", command=self.close).pack(side="right")
+        # Si el juego no está en una biblioteca de Steam que el programa encuentre solo, acá se indica dónde está.
+        ttk.Button(bottom, text="🎮 Carpeta del juego…", command=lambda: choose_game_folder(self)).pack(
+            side="right", padx=(0, 6))
         self.protocol("WM_DELETE_WINDOW", self.close)
 
     # --- grabación del audio de la PC ---
@@ -793,8 +796,8 @@ def choose_game_folder(parent):
             "de Windows.", parent=parent)
         return False
     paths.save_setting("carpeta_juego", str(found))
-    messagebox.showinfo("Carpeta del juego", f"Listo: el programa va a usar el juego de\n{found}\n\nApretá «⟳ Actualizar» "
-                        "para preparar las voces.", parent=parent)
+    messagebox.showinfo("Carpeta del juego", f"Listo: el programa va a usar el juego de\n{found}\n\nLas voces se "
+                        "preparan al actualizar.", parent=parent)
     return True
 
 
@@ -843,8 +846,6 @@ class UpdateWindow(tk.Toplevel):
         self.log.pack(side="left", fill="both", expand=True)
         self.close_btn = ttk.Button(self.buttons, text="Cerrar", command=self.close, state="disabled")
         self.close_btn.pack(side="right")
-        # Para quien tiene el juego fuera de las bibliotecas de Steam que el programa encuentra solo.
-        ttk.Button(self.buttons, text="🎮 Carpeta del juego…", command=lambda: choose_game_folder(self)).pack(side="left")
         self.running = True
         # El trabajo va en otro hilo y deja sus mensajes en una cola; la ventana los lee desde su propio hilo
         # (tkinter no se puede tocar desde otro hilo).
@@ -3757,20 +3758,32 @@ class StartScreen(tk.Tk):
             return
         if not online:  # sin internet: se usa con lo que ya tiene
             return self.open_program()
+        import paths
+        no_game = ("\n\nNo encontré Shadowverse: Worlds Beyond en Steam: sin el juego no hay voces (todo lo demás "
+                   "funciona). Si lo tenés instalado en otro lugar, elegí su carpeta antes de seguir."
+                   if paths.game_data() is None else "")
         if self.first_time:
             self.status.config(text="Primera vez: hay que descargar todo antes de usar el programa.")
             self.detail.config(text="Se baja:\n• " + "\n• ".join(reasons) +
-                                    "\n\nPuede tardar un buen rato; se hace una sola vez.")
+                                    "\n\nPuede tardar un buen rato; se hace una sola vez." + no_game)
             self._button("Descargar todo", self.start_update, primary=True)
+            self._game_button(no_game)
             self._button("Salir", self.quit_program)
         else:
             self.status.config(text="Hay novedades para actualizar.")
             self.detail.config(text="Novedades:\n• " + "\n• ".join(reasons) +
-                                    "\n\nPodés actualizar ahora o más tarde con «⟳ Actualizar» dentro del programa.")
+                                    "\n\nPodés actualizar ahora o más tarde con «⟳ Actualizar» dentro del programa."
+                                    + no_game)
             self._button("Actualizar", self.start_update, primary=True)
+            self._game_button(no_game)
             self._button("Iniciar sin actualizar", lambda: self.open_program(reasons))
         if self.auto_update:  # se volvió a abrir solo después de instalar una versión nueva: sigue
             self.start_update()
+
+    def _game_button(self, show):
+        """«Elegir carpeta del juego», solo si no se encontró el juego; después de elegirla se vuelve a revisar."""
+        if show:
+            self._button("🎮 Elegir carpeta del juego", lambda: choose_game_folder(self) and self.retry())
 
     def retry(self):
         self._clear_buttons()

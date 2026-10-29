@@ -14,6 +14,7 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import shutil
 import sqlite3
 import sys
@@ -134,7 +135,9 @@ def sync_files(info, progress):
         state[path] = digest
         got += 1
     _save_state(state)
-    progress(f"  traducciones y correcciones: {got} archivo(s) nuevo(s)")
+    progress(f"  traducciones y correcciones: {got} archivo(s) nuevo(s)" if got else
+             "  traducciones y correcciones: sin cambios")
+    return got
 
 
 def _merge_mapping(remote):
@@ -385,23 +388,62 @@ def _build():
             backup.unlink()
 
 
-def _voices(progress):
+WEEK = 7 * 24 * 3600  # cada cuánto se revisa entera la lista de cartas aunque no haya nuevas (cambios de balance)
+
+
+def game_signature():
+    """«Huella» de la carpeta de audios del juego (cantidad de archivos, tamaño total, último cambio): si no cambió
+    desde la última vez, las voces ya están al día y no hace falta revisar los miles de paquetes."""
+    root = game_data()
+    if root is None:
+        return None
+    n = size = newest = 0
+    for dp, _, files in os.walk(root):
+        for fn in files:
+            try:
+                st = os.stat(os.path.join(dp, fn))
+            except OSError:
+                continue
+            n, size, newest = n + 1, size + st.st_size, max(newest, int(st.st_mtime))
+    return f"{n}:{size}:{newest}"
+
+
+def _voices(progress, cards_changed):
     import voices, auto_voices
     if game_data() is None:
-        print("No encontré Shadowverse: Worlds Beyond en las bibliotecas de Steam. Si lo tenés instalado en otro lugar, "
-              "usá «Carpeta del juego…» (abajo en esta ventana) y volvé a actualizar. Sin el juego, todo lo demás "
-              "funciona igual, solo que sin voces.")
+        print("No encontré Shadowverse: Worlds Beyond en las bibliotecas de Steam: sin el juego, todo funciona igual "
+              "pero sin voces. Si lo tenés instalado en otro lugar, indicalo con «🎮 Carpeta del juego…» (en la "
+              "pantalla de inicio o en el asistente de voces 🎙) y volvé a actualizar.")
+        return
+    state = _state()
+    sig = game_signature()
+    if voices.INDEX_JSON.exists() and "voces_firma" not in state:
+        # Ya tenía las voces preparadas (de una versión anterior del programa): se toman como al día en vez de
+        # repasar todo de nuevo. Si el juego se actualiza después, la huella cambia y se suman las nuevas.
+        state["voces_firma"] = sig
+        _save_state(state)
+    if voices.INDEX_JSON.exists() and state.get("voces_firma") == sig:
+        if cards_changed:
+            print(f"El juego no cambió; voces asignadas a las cartas nuevas: {auto_voices.fill_mapping()}")
+        else:
+            print("Sin cambios (el juego no se actualizó desde la última vez).")
         return
     voices.build_cache(progress=lambda s: print(s))
     print(f"Voces asignadas automáticamente: {auto_voices.fill_mapping()} cartas")
+    state = _state()
+    state["voces_firma"] = sig
+    _save_state(state)
 
 
-def _art():
+def _art(fetch):
     import fetch_art, watermark
-    fetch_art.main()
+    if fetch:  # WBGDB solo se consulta si hay cartas nuevas (o en la revisión semanal)
+        fetch_art.main()
     put, had = watermark.process(sorted((ROOT / "images" / "arte").glob("*.png")))
     if put:
         print(f"Marca de agua puesta en {put} ilustraciones nuevas.")
+    elif not fetch:
+        print("Sin cambios.")
 
 
 def _console(text):
@@ -416,21 +458,51 @@ def run(progress=_console, with_voices=True):
     """Actualiza todo. Devuelve {"version_nueva": str|None, "cartas_antes": n, "cartas_despues": n}."""
     before = _count()
     info = None
+    files_changed = 0
     if config.GITHUB_USER:
         progress("Buscando novedades del programa en GitHub...")
         info = remote_info()
         if info is None:
             progress("  no se pudo consultar GitHub (¿sin internet?); sigo con el resto")
         else:
-            _step("Traducciones y correcciones publicadas...", progress, sync_files, info, progress)
+            files_changed = _step("Traducciones y correcciones publicadas...", progress, sync_files, info, progress)
             _step("Imágenes publicadas...", progress, sync_packs, info, progress)
-    ok = _step("Cartas del sitio oficial (puede tardar unos minutos)...", progress, _cards)
-    if ok:
-        _step("Armando la base de cartas y las traducciones...", progress, _build)
+    # Solo se hace lo que cambió: el programa anota en datos_descargados.json en qué estado quedó cada cosa.
+    state = _state()
+    progress("Cartas del sitio oficial...")
+    official, local = official_count(), local_count()
+    fresh = time.time() - state.get("cartas_revision", 0) < WEEK
+    if "cartas_revision" not in state and DB.exists() and official == local:
+        fresh = True  # ya estaba todo (por ejemplo, de una versión anterior del programa): se toma como revisado
+        state["cartas_revision"] = time.time()
+    cards_changed = False
+    if official is None:
+        progress("  no se pudo consultar el sitio oficial (sin internet o en mantenimiento); queda lo que hay")
+    elif DB.exists() and official == local and fresh:
+        progress(f"  sin cartas nuevas ({local} cartas)")
+    else:
+        why = ("primera descarga" if not DB.exists() else f"{official - local} cartas nuevas" if official > local
+               else "revisión semanal de cambios en las cartas")
+        if _step(f"  bajando la lista completa ({why}; puede tardar unos minutos)...", progress, _cards):
+            _step("Armando la base de cartas y las traducciones...", progress, _build)
+            cards_changed = True
+            state = _state()
+            state["cartas_revision"] = time.time()
+    # Versión nueva del programa (puede traer arreglos del traductor) o traducciones nuevas: se rehacen las
+    # traducciones sobre la base que ya está (unos segundos), sin volver a bajar las cartas.
+    version_changed = state.get("programa_version") != config.VERSION
+    if not cards_changed and DB.exists() and (version_changed or files_changed):
+        import translate_lore, translate_skills
+        if version_changed and (ROOT / "raw" / "global").exists():
+            _step("Rearmando las traducciones con la versión nueva del programa...", progress, _build)
+        else:
+            _step("Aplicando las traducciones nuevas...", progress, translate_lore.apply)
+    state["programa_version"] = config.VERSION
+    _save_state(state)
     _step("Correcciones de traducción...", progress, apply_corrections, progress)
     if with_voices:
-        _step("Voces (la primera vez tarda bastante)...", progress, _voices, progress)
-    _step("Ilustraciones sin marco...", progress, _art)
+        _step("Voces...", progress, _voices, progress, cards_changed)
+    _step("Ilustraciones sin marco...", progress, _art, cards_changed)
     after = _count()
     progress(f"Listo: {after} cartas" + (f" ({after - before} nuevas)." if after > before else "."))
     return {"version_nueva": new_version(info), "cartas_antes": before, "cartas_despues": after,

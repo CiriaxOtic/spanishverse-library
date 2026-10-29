@@ -34,6 +34,7 @@ BANDS = 40
 MAX_CARD_LINES = 30  # paquetes más grandes: voces de sistema, historia o líderes
 MAX_SFX_BYTES = 400_000  # efectos más pesados que esto son música o ambientes largos, no sonidos de cartas
 PROFILES = VOICES / "profiles.npy"
+SIGNATURES = VOICES / "index_firmas.json"  # paquete -> tamaño y fecha con que se indexó (para no repetirlo)
 
 
 # ---------- lectura de paquetes ----------
@@ -180,9 +181,41 @@ def build_cache(root=None, progress=print):
     if not packs:
         progress(f"no encontré los audios del juego en {root}: el índice de voces queda como estaba")
         return False
+    # Lo ya indexado se reusa: un paquete que no cambió (mismo tamaño, fecha y cantidad de audios) no se vuelve a
+    # leer. Así, cuando el juego se actualiza, solo se procesan los paquetes nuevos o cambiados.
+    old_sigs, old_entries, old_feats, old_profs = {}, {}, [], None
+    if SIGNATURES.exists() and INDEX_JSON.exists() and INDEX_NPZ.exists():
+        try:
+            old_sigs = json.loads(SIGNATURES.read_text(encoding="utf-8"))
+            old_entries = {e["rel"]: e for e in json.loads(INDEX_JSON.read_text(encoding="utf-8"))}
+            npz = np.load(INDEX_NPZ)
+            old_feats = [npz[f"arr_{i}"] for i in range(len(npz.files))]
+            old_profs = np.load(PROFILES) if PROFILES.exists() else None
+        except Exception:
+            old_sigs, old_entries, old_feats, old_profs = {}, {}, [], None
+    sigs, reused = {}, 0
     entries, feats, profs = [], [], []
     tmp = CACHE / "_tmp.wem"
     for i, (rel, bank, streams, kind) in enumerate(packs, 1):
+        st = os.stat(os.path.join(root, rel))
+        sig = f"{st.st_size}:{st.st_mtime_ns}:{len(streams)}"
+        sigs[rel] = sig
+        if old_sigs.get(rel) == sig and old_profs is not None:
+            old = old_entries.get(rel)
+            if old is None:  # se había revisado y no tenía líneas de cartas
+                reused += 1
+                continue
+            if all((CACHE / ln["wav"]).exists() for ln in old["lines"]):
+                lines = []
+                for ln in old["lines"]:
+                    lines.append(dict(ln, feat=len(feats)))
+                    feats.append(old_feats[ln["feat"]])
+                    profs.append(old_profs[ln["feat"]])
+                entries.append(dict(old, lines=lines))
+                reused += 1
+                if i % 500 == 0 or i == len(packs):
+                    progress(f"{i}/{len(packs)} paquetes")
+                continue
         data = open(os.path.join(root, rel), "rb").read()
         lines = []
         for j, (sid, off, size) in enumerate(streams):
@@ -212,7 +245,8 @@ def build_cache(root=None, progress=print):
     INDEX_JSON.write_text(json.dumps(entries), encoding="utf-8")
     np.savez_compressed(INDEX_NPZ, *feats)
     np.save(PROFILES, np.stack(profs))
-    progress(f"listo: {len(entries)} paquetes, {len(feats)} líneas")
+    SIGNATURES.write_text(json.dumps(sigs), encoding="utf-8")
+    progress(f"listo: {len(entries)} paquetes, {len(feats)} líneas ({len(packs) - reused} paquetes nuevos o cambiados)")
 
 
 # ---------- reconocimiento ----------
