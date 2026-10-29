@@ -17,6 +17,8 @@ import webbrowser
 from pathlib import Path
 from tkinter import messagebox, simpledialog, ttk
 
+from PIL import Image, ImageDraw, ImageFont, ImageTk
+
 sys.path.insert(0, str(Path(__file__).resolve().parent / "tools"))
 from paths import ROOT  # noqa: E402  (la carpeta del programa, también empaquetado como .exe)
 DB = ROOT / "cards.db"
@@ -53,11 +55,14 @@ def _chosen_theme():
 
 THEME = _chosen_theme()  # «Ayuda → Tema claro / oscuro» (se aplica al reiniciar el programa)
 if THEME == "claro":
-    BG, PANEL, INK, MUTED, LINE = "#f1f0f5", "#ffffff", "#1d1b24", "#64616f", "#d6d3df"
-    FIELD = "#eae8f0"
-    ACCENT, KW, KW_BG, LINK = "#7357d4", "#8a5a00", "#fbeccb", "#2a5bc4"
+    # Gris claro (no blanco): descansa la vista.
+    BG, PANEL, INK, MUTED, LINE = "#c9c7cf", "#d8d6dd", "#1b1922", "#4a4755", "#a9a6b2"
+    FIELD = "#c2c0c9"
+    ACCENT, KW, KW_BG, LINK = "#6248c4", "#7a4e00", "#e6d5ab", "#1f4fb0"
     ACCENT_HOVER, BAD = "#5f45bd", "#c43c3c"
 FONT = ("Segoe UI", 10)
+# Carpetas de imágenes en orden de preferencia: normalmente en español; con «Ver en inglés», en inglés.
+IMAGE_ORDER = {False: (("es", "es419"), ("en", "eng")), True: (("en", "eng"), ("es", "es419"))}
 SETTINGS = ROOT / "ajustes.json"  # preferencias del usuario (por ahora, el tamaño de letra)
 # Tamaños de letra que se pueden elegir: de 100 % a 135 %, más grande sin desarmar las pantallas.
 FONT_SCALES = [round(1 + 0.05 * i, 2) for i in range(8)]
@@ -1050,7 +1055,7 @@ class UpdateWindow(tk.Toplevel):
         frame.pack(fill="both", expand=True, pady=8)
         self.log = tk.Text(frame, bg=FIELD, fg=INK, relief="flat", font=F("Consolas", 9), wrap="word",
                            state="disabled", padx=8, pady=6)
-        sb = ttk.Scrollbar(frame, orient="vertical", command=self.log.yview)
+        sb = FastScrollbar(frame, orient="vertical", command=self.log.yview)
         self.log.configure(yscrollcommand=sb.set)
         sb.pack(side="right", fill="y")
         self.log.pack(side="left", fill="both", expand=True)
@@ -1408,6 +1413,633 @@ def draw_curve(cv, buckets, labels):
         cv.create_text((x0 + x1) / 2, h - 10 - extra / 2, text=labels[i], fill=MUTED, font=F(*FONT))
 
 
+class FastScrollbar(tk.Canvas):
+    """Barra de desplazamiento dibujada (como la de ttk: flechitas en las puntas y la barra en el medio).
+    La de ttk tarda ~6 ms en redibujarse cada vez que se mueve: al arrastrarla, eso solo ya frenaba la lista.
+    Se usa igual: command=lista.yview y lista.configure(yscrollcommand=barra.set)."""
+    SIZE = 16
+
+    def __init__(self, parent, orient="vertical", command=None, **_):
+        self.vertical = orient == "vertical"
+        size = {"width" if self.vertical else "height": self.SIZE}
+        super().__init__(parent, bg=BG, highlightthickness=0, bd=0, **size)
+        self.command = command
+        self.first, self.last = 0.0, 1.0
+        self._grab = None  # al arrastrar la barra: dónde se la agarró
+        self._repeat = None
+        self._hover = False
+        self.thumb = self.create_rectangle(0, 0, 0, 0, fill=PANEL, outline=LINE)
+        self.arrows = [self.create_polygon(0, 0, 0, 0, 0, 0, fill=INK, outline="") for _ in range(2)]
+        self.bind("<Configure>", lambda e: self._paint())
+        self.bind("<Button-1>", self._press)
+        self.bind("<B1-Motion>", self._drag)
+        self.bind("<ButtonRelease-1>", self._release)
+        self.bind("<Enter>", lambda e: self._set_hover(True))
+        self.bind("<Leave>", lambda e: self._set_hover(False))
+        self.bind("<MouseWheel>", lambda e: self.command and self.command("scroll", int(-e.delta / 120) * 3, "units"))
+
+    def set(self, first, last):
+        first, last = float(first), float(last)
+        if (first, last) != (self.first, self.last):
+            self.first, self.last = first, last
+            self._paint()
+
+    def get(self):
+        return self.first, self.last
+
+    def _length(self):
+        return (self.winfo_height() if self.vertical else self.winfo_width()) - 2 * self.SIZE
+
+    def _paint(self):
+        s, length = self.SIZE, self._length()
+        a = s + round(self.first * length)
+        b = s + max(round(self.last * length), round(self.first * length) + 12)
+        b = min(b, s + length)
+        full = self.first <= 0 and self.last >= 1
+        box = (2, a, s - 2, b) if self.vertical else (a, 2, b, s - 2)
+        self.coords(self.thumb, *box)
+        self.itemconfigure(self.thumb, state="hidden" if full else "normal",
+                           fill=LINE if self._grab is not None or self._hover else PANEL)
+        far = (self.winfo_height() if self.vertical else self.winfo_width())
+        m, h = s / 2, 3.5
+        if self.vertical:
+            pts = [(m - h, m + 2, m + h, m + 2, m, m - 2), (m - h, far - m - 2, m + h, far - m - 2, m, far - m + 2)]
+        else:
+            pts = [(m + 2, m - h, m + 2, m + h, m - 2, m), (far - m - 2, m - h, far - m - 2, m + h, far - m + 2, m)]
+        for arrow, p in zip(self.arrows, pts):
+            self.coords(arrow, *p)
+            self.itemconfigure(arrow, fill=MUTED if full else INK)
+
+    def _set_hover(self, on):
+        self._hover = on
+        self._paint()
+
+    def _pos(self, event):
+        return (event.y if self.vertical else event.x) - self.SIZE
+
+    def _press(self, event):
+        if not self.command:
+            return
+        p, length = self._pos(event), max(1, self._length())
+        if p < 0 or p > length:  # flechitas: una línea, y sigue mientras se mantiene apretado
+            self._auto("scroll", -1 if p < 0 else 1, "units")
+        elif self.first * length <= p <= self.last * length:
+            self._grab = p / length - self.first
+            self._paint()
+        else:  # en el canal: una página hacia ese lado
+            self._auto("scroll", -1 if p < self.first * length else 1, "pages")
+
+    def _auto(self, *args, delay=350):
+        self.command(*args)
+        self._repeat = self.after(delay, lambda: self._auto(*args, delay=50))
+
+    def _drag(self, event):
+        if self._grab is None or not self.command:
+            return
+        self.command("moveto", max(0.0, self._pos(event) / max(1, self._length()) - self._grab))
+
+    def _release(self, _):
+        if self._repeat:
+            self.after_cancel(self._repeat)
+            self._repeat = None
+        self._grab = None
+        self._paint()
+
+
+class FastTree(tk.Canvas):
+    """Lista con columnas que se desplaza fluida (a la frecuencia de la pantalla). Se usa como un ttk.Treeview
+    (insert, delete, item, set, selection, see, bbox, identify..., heading, column, tag_configure, yview, xview y
+    el evento <<TreeviewSelect>>), pero dibuja cada fila una sola vez como imagen (con Pillow) y al desplazar
+    solo mueve esas imágenes. En Windows, tkinter tarda ~0,15 ms por cada texto que dibuja: un Treeview de 8
+    columnas redibujaba ~360 textos en cada paso del desplazamiento (~8 cuadros por segundo)."""
+    PAD = 6  # margen del texto dentro de cada celda
+    BATCH = 8  # filas que se preparan por vez, de fondo, para que estén listas antes de verse
+
+    def __init__(self, parent, columns, show="headings", selectmode="browse", height=None, **_):
+        super().__init__(parent, bg=PANEL, highlightthickness=0, bd=0, takefocus=1)
+        self._cols = list(columns)
+        self._show_tree = "tree" in show
+        self._spec = {c: {"width": 200, "minwidth": 20, "anchor": "w", "stretch": True} for c in ["#0"] + self._cols}
+        self._spec["#0"].update(width=30, stretch=False)
+        self._head = {c: {"text": "", "command": None} for c in ["#0"] + self._cols}
+        self._items, self._order, self._index = {}, [], {}  # iid -> fila; orden; iid -> posición
+        self._sel = None
+        self._tags = {}
+        self._y = self._x = 0  # desplazamiento en píxeles
+        self._ysc = self._xsc = None
+        self._cache = {}  # (contenido de la fila, seleccionada) -> imagen, para el ancho de columnas de _cache_sig
+        self._cache_sig = None
+        self._pool = []  # imágenes del lienzo reutilizadas para las filas visibles
+        self._header_item = self.create_image(0, 0, anchor="nw")
+        self._header_photo = None
+        self._prefill_job = self._draw_job = None
+        self._drag = None  # columna que se está agrandando con el mouse (borde de su título)
+        self._layout_key = None
+        self._metrics = self._size = None
+        # Los atajos propios van en una etiqueta después de la del widget: los bind() de afuera corren antes y
+        # pueden cortar con "break" (como en un Treeview).
+        tag = f"FastTree{id(self)}"
+        self.bindtags((str(self), tag, "Canvas", str(self.winfo_toplevel()), "all"))
+        for seq, fn in (("<Configure>", self._resized), ("<Button-1>", self._click),
+                        ("<B1-Motion>", self._motion), ("<ButtonRelease-1>", lambda e: setattr(self, "_drag", None)),
+                        ("<Motion>", self._hover), ("<MouseWheel>", self._wheel),
+                        ("<Up>", lambda e: self._step(-1)), ("<Down>", lambda e: self._step(1)),
+                        ("<Prior>", lambda e: self._step(-self._page())), ("<Next>", lambda e: self._step(self._page())),
+                        ("<Home>", lambda e: self._step(-len(self._order))), ("<End>", lambda e: self._step(len(self._order)))):
+            self.bind_class(tag, seq, fn)
+
+    # ---------- configuración, como en ttk.Treeview ----------
+    def __getitem__(self, key):
+        return tuple(self._cols) if key == "columns" else super().__getitem__(key)
+
+    def configure(self, cnf=None, **kw):
+        if "show" in kw:
+            self._show_tree = "tree" in kw.pop("show")
+        if "yscrollcommand" in kw:
+            self._ysc = kw.pop("yscrollcommand")
+        if "xscrollcommand" in kw:
+            self._xsc = kw.pop("xscrollcommand")
+        for k in ("selectmode", "height", "style"):
+            kw.pop(k, None)
+        if kw or cnf:
+            return super().configure(cnf, **kw)
+        self._relayout()
+
+    config = configure
+
+    def heading(self, col, text=None, command=None):
+        h = self._head[col]
+        if text is not None:
+            h["text"] = text
+        if command is not None:
+            h["command"] = command
+        self._layout_key = self._metrics = None
+        self._redraw_soon()
+
+    def column(self, col, option=None, **kw):
+        spec = self._spec[col]
+        if option is not None:
+            return spec[option]
+        spec.update({k: v for k, v in kw.items() if k in spec})
+        self._layout_key = self._metrics = None
+        self._redraw_soon()
+
+    def tag_configure(self, tag, **kw):
+        self._tags.setdefault(tag, {}).update(kw)
+        self._clear_cache()
+        self._redraw_soon()
+
+    # ---------- filas ----------
+    def insert(self, parent, index, iid=None, text="", values=(), tags=(), **_):
+        iid = str(iid if iid is not None else f"I{len(self._items) + 1:05d}")
+        self._items[iid] = {"text": text, "values": [("" if v is None else v) for v in values],
+                            "tags": tuple([tags] if isinstance(tags, str) else tags)}
+        pos = len(self._order) if index == "end" else max(0, min(int(index), len(self._order)))
+        self._order.insert(pos, iid)
+        self._reindex(pos)
+        self._changed()
+        return iid
+
+    def delete(self, *iids):
+        gone = {i for i in iids if i in self._items}
+        if not gone:
+            return
+        for i in gone:
+            del self._items[i]
+        self._order = [i for i in self._order if i not in gone]
+        for i in gone:
+            self._index.pop(i, None)
+        self._reindex(0)
+        if self._sel in gone:
+            self._sel = None
+        self._changed()
+
+    def _reindex(self, start):
+        for n in range(start, len(self._order)):
+            self._index[self._order[n]] = n
+
+    def get_children(self, item=""):
+        return tuple(self._order)
+
+    def exists(self, iid):
+        return iid in self._items
+
+    def index(self, iid):
+        return self._index[iid]
+
+    def next(self, iid):
+        n = self._index.get(iid)
+        return self._order[n + 1] if n is not None and n + 1 < len(self._order) else ""
+
+    def item(self, iid, option=None, **kw):
+        it = self._items[iid]
+        if not kw:
+            info = {"text": it["text"], "values": list(it["values"]), "tags": list(it["tags"])}
+            return info[option] if option else info
+        if "text" in kw:
+            it["text"] = kw["text"]
+        if "values" in kw:
+            it["values"] = list(kw["values"])
+        if "tags" in kw:
+            t = kw["tags"]
+            it["tags"] = tuple([t] if isinstance(t, str) else t)
+        self._redraw_soon()
+
+    def set(self, iid, column, value=None):
+        it, n = self._items[iid], self._cols.index(column)
+        if value is None:
+            return it["values"][n] if n < len(it["values"]) else ""
+        while len(it["values"]) <= n:
+            it["values"].append("")
+        it["values"][n] = value
+        self._redraw_soon()
+
+    # ---------- selección ----------
+    def selection(self):
+        return (self._sel,) if self._sel else ()
+
+    def selection_set(self, iid):
+        iid = iid[0] if isinstance(iid, (tuple, list)) else iid
+        if iid in self._items and iid != self._sel:
+            self._sel = iid
+            self._redraw_soon()
+            self.event_generate("<<TreeviewSelect>>", when="tail")
+
+    def see(self, iid):
+        if iid not in self._index:
+            return
+        rh, top = self._rh(), self._index[iid] * self._rh()
+        view = self._body_h()
+        if top < self._y:
+            self._scroll_to(top)
+        elif top + rh > self._y + view:
+            self._scroll_to(top + rh - view)
+
+    # ---------- posiciones ----------
+    # Medidas que se piden muchas veces por cuadro: se guardan hasta que cambia la letra o el tamaño.
+    def _rh(self):
+        if self._metrics is None:
+            self._metrics = (int(ttk.Style().lookup("Treeview", "rowheight") or 24),
+                             self._fonts()[1].getbbox("Ág")[3] + 10)
+        return self._metrics[0]
+
+    def _hh(self):
+        self._rh()
+        return self._metrics[1]
+
+    def _width(self):
+        return self._size[0] if self._size else self.winfo_width()
+
+    def _height(self):
+        return self._size[1] if self._size else self.winfo_height()
+
+    def _body_h(self):
+        return max(1, self._height() - self._hh())
+
+    def _page(self):
+        return max(1, self._body_h() // self._rh() - 1)
+
+    def identify_row(self, y):
+        if y < self._hh():
+            return ""
+        n = int((y - self._hh() + self._y) // self._rh())
+        return self._order[n] if 0 <= n < len(self._order) else ""
+
+    def identify_column(self, x):
+        x += self._x
+        for n, (col, left, w) in enumerate(self._layout()):
+            if left <= x < left + w:
+                return "#0" if col == "#0" else f"#{self._cols.index(col) + 1}"
+        return ""
+
+    def identify_region(self, x, y):
+        if y < self._hh():
+            return "heading"
+        if not self.identify_row(y):
+            return "nothing"
+        return "tree" if self.identify_column(x) == "#0" else "cell"
+
+    def bbox(self, iid, column=None):
+        if iid not in self._index:
+            return ""
+        y = self._hh() + self._index[iid] * self._rh() - self._y
+        if y + self._rh() <= self._hh() or y >= self._height():
+            return ""
+        return (0, y, self._width(), self._rh())
+
+    # ---------- desplazamiento ----------
+    def _total_h(self):
+        return len(self._order) * self._rh()
+
+    def _total_w(self):
+        lay = self._layout()
+        return lay[-1][1] + lay[-1][2] if lay else 0
+
+    def _scroll_to(self, y=None, x=None):
+        if y is not None:
+            self._y = int(max(0, min(y, self._total_h() - self._body_h())))
+        if x is not None:
+            self._x = int(max(0, min(x, self._total_w() - self._width())))
+        # Se dibuja una vez por cuadro aunque lleguen muchos movimientos del mouse seguidos.
+        self._redraw_soon()
+
+    def yview(self, *args):
+        total = max(1, self._total_h())
+        if not args:
+            return self._y / total, min(1.0, (self._y + self._body_h()) / total)
+        if args[0] == "moveto":
+            self._scroll_to(y=float(args[1]) * total)
+        elif args[0] == "scroll":
+            step = self._rh() if args[2] == "units" else self._body_h()
+            self._scroll_to(y=self._y + int(args[1]) * step)
+
+    def xview(self, *args):
+        total = max(1, self._total_w())
+        if not args:
+            return self._x / total, min(1.0, (self._x + self._width()) / total)
+        if args[0] == "moveto":
+            self._scroll_to(x=float(args[1]) * total)
+        elif args[0] == "scroll":
+            self._scroll_to(x=self._x + int(args[1]) * (20 if args[2] == "units" else self._width()))
+
+    def yview_scroll(self, n, what):
+        self.yview("scroll", n, what)
+
+    def yview_moveto(self, f):
+        self.yview("moveto", f)
+
+    def _wheel(self, event):
+        self._scroll_to(y=self._y - int(event.delta / 120) * 3 * self._rh())
+
+    # ---------- mouse y teclado ----------
+    def _click(self, event):
+        self.focus_set()
+        if event.y < self._hh():
+            edge = self._edge(event.x)
+            if edge:
+                self._drag = (edge, event.x, self._spec[edge]["width"])
+                return
+            col = self.identify_column(event.x)
+            key = "#0" if col == "#0" else self._cols[int(col[1:]) - 1] if col else None
+            if key and self._head[key]["command"]:
+                self._head[key]["command"]()
+            return
+        iid = self.identify_row(event.y)
+        if iid:
+            self.selection_set(iid)
+
+    def _edge(self, x):
+        """Columna cuyo borde derecho está bajo el mouse (para cambiarle el ancho arrastrando)."""
+        x += self._x
+        for col, left, w in self._layout():
+            if abs(left + w - x) <= 4 and col != "#0":
+                return col
+        return None
+
+    def _hover(self, event):
+        want = "sb_h_double_arrow" if event.y < self._hh() and self._edge(event.x) else ""
+        if self.cget("cursor") != want and (want or self.cget("cursor") == "sb_h_double_arrow"):
+            self.config(cursor=want)
+
+    def _motion(self, event):
+        if not self._drag:
+            return
+        col, x0, w0 = self._drag
+        spec = self._spec[col]
+        spec["width"] = max(spec["minwidth"], w0 + event.x - x0)
+        if spec["stretch"]:  # una columna elástica que se agranda a mano deja de repartirse el espacio libre
+            spec["stretch"] = False
+        if hasattr(self, "base_widths"):
+            self.base_widths[col] = (round(spec["width"] / _font_scale[0]), self.base_widths[col][1])
+        self._layout_key = None
+        self._redraw_soon()
+
+    def _step(self, delta):
+        if not self._order:
+            return "break"
+        n = self._index.get(self._sel, -1 if delta > 0 else len(self._order))
+        iid = self._order[max(0, min(len(self._order) - 1, n + delta))]
+        self.selection_set(iid)
+        self.see(iid)
+        return "break"
+
+    # ---------- dibujo ----------
+    def _fonts(self):
+        """Fuentes de Pillow iguales a las de tkinter (TkDefaultFont para las filas, TkHeadingFont arriba)."""
+        sizes = tuple(abs(tkfont.nametofont(n).cget("size")) for n in ("TkDefaultFont", "TkHeadingFont"))
+        if getattr(self, "_font_sizes", None) != sizes:
+            px = self.winfo_fpixels("1i") / 72
+            self._font_sizes = sizes
+            self._pil_fonts = tuple(_pil_font(round(s * px)) for s in sizes)
+        return self._pil_fonts
+
+    def _layout(self):
+        """[(columna, x, ancho)] con el espacio libre repartido entre las columnas elásticas, como un Treeview."""
+        cols = (["#0"] if self._show_tree else []) + self._cols
+        width = self._width()
+        key = (tuple((c, tuple(self._spec[c].values())) for c in cols), width)
+        if key == getattr(self, "_lay_key", None):
+            return self._lay
+        widths = {c: self._spec[c]["width"] for c in cols}
+        elastic = [c for c in cols if self._spec[c]["stretch"]]
+        extra = width - sum(widths.values())
+        if elastic and extra:
+            base = sum(widths[c] for c in elastic) or 1
+            for c in elastic:
+                widths[c] = max(self._spec[c]["minwidth"], widths[c] + extra * widths[c] // base)
+        x, lay = 0, []
+        for c in cols:
+            lay.append((c, x, widths[c]))
+            x += widths[c]
+        self._lay_key, self._lay = key, lay
+        return lay
+
+    def _row_image(self, iid):
+        it = self._items[iid]
+        sel = iid == self._sel
+        lay = tuple(self._layout())
+        rh = self._rh()
+        style = {}
+        for t in it["tags"]:
+            style.update(self._tags.get(t, {}))
+        if (lay, rh, self._font_sizes) != self._cache_sig or len(self._cache) > 4000:
+            self._clear_cache()  # otro ancho de columnas o de letra: las imágenes viejas ya no sirven
+            self._cache_sig = (lay, rh, self._font_sizes)
+        key = (it["text"], tuple(it["values"]), tuple(sorted(style.items())), sel)
+        img = self._cache.get(key)
+        if img is None:
+            img = self._cache[key] = self._render(it, style, sel, lay, rh)
+            # Una copia escondida en el lienzo hace que Tk la deje preparada para mostrar (si no, la prepara
+            # cada vez que la fila entra en la vista: ~0,35 ms por fila).
+            self.create_image(-10000, -10000, image=img, anchor="nw", state="hidden", tags="keep")
+        return img
+
+    def _clear_cache(self):
+        self._cache.clear()
+        super().delete("keep")
+
+    def _render(self, it, style, sel, lay, rh):
+        font = self._fonts()[0]
+        bg = ACCENT if sel else style.get("background", PANEL)
+        fg = "#ffffff" if sel else style.get("foreground", INK)
+        width = lay[-1][1] + lay[-1][2] if lay else 1
+        im = Image.new("RGB", (max(1, width), rh), bg)
+        d = ImageDraw.Draw(im)
+        values = it["values"]
+        for col, x, w in lay:
+            if col == "#0":
+                if it["text"] in ("▼", "▲"):  # la flechita del resumen, dibujada (no todas las fuentes la traen)
+                    cx, cy, s = x + w / 2, rh / 2, 4
+                    pts = [(cx - s, cy - 2), (cx + s, cy - 2), (cx, cy + 3)] if it["text"] == "▼" else \
+                        [(cx - s, cy + 2), (cx + s, cy + 2), (cx, cy - 3)]
+                    d.polygon(pts, fill=fg)
+                    continue
+                text = str(it["text"])
+            else:
+                n = self._cols.index(col)
+                text = str(values[n]) if n < len(values) else ""
+            if text:
+                self._text(d, font, text, x, w, rh, self._spec[col]["anchor"], fg)
+        return ImageTk.PhotoImage(im, master=self)
+
+    def _text(self, d, font, text, x, w, h, anchor, fg):
+        room = w - 2 * self.PAD
+        if room <= 4:
+            return
+        if font.getlength(text) > room:  # no entra: se corta con «…»
+            while text and font.getlength(text + "…") > room:
+                text = text[:-1]
+            text += "…"
+        if anchor == "center":
+            d.text((x + w / 2, h / 2), text, fill=fg, font=font, anchor="mm")
+        else:
+            d.text((x + self.PAD, h / 2), text, fill=fg, font=font, anchor="lm")
+
+    def _header_image(self):
+        font = self._fonts()[1]
+        lay, hh = self._layout(), self._hh()
+        width = max(self._width() + self._x, lay[-1][1] + lay[-1][2] if lay else 1)
+        im = Image.new("RGB", (max(1, width), hh), BG)
+        d = ImageDraw.Draw(im)
+        for col, x, w in lay:
+            if self._head[col]["text"]:
+                self._text(d, font, self._head[col]["text"], x, w, hh, "center", MUTED)
+            d.line((x + w - 1, 4, x + w - 1, hh - 5), fill=LINE)
+        return ImageTk.PhotoImage(im, master=self)
+
+    def _resized(self, event):
+        self._size = (event.width, event.height)
+        self._relayout()
+
+    def _relayout(self):
+        self._metrics = None
+        self._layout_key = None
+        self._scroll_to(self._y, self._x)
+
+    def _changed(self):
+        """Cambiaron las filas: se dibuja cuando el programa termina lo que está haciendo (una vez)."""
+        self._redraw_soon()
+
+    def _redraw_soon(self):
+        if not self._draw_job:
+            self._draw_job = self.after_idle(self._draw)
+
+    def _draw(self):
+        if self._draw_job:
+            self.after_cancel(self._draw_job)
+            self._draw_job = None
+        if not self.winfo_exists():
+            return
+        self._y = int(max(0, min(self._y, self._total_h() - self._body_h())))
+        self._x = int(max(0, min(self._x, self._total_w() - self._width())))
+        rh, hh = self._rh(), self._hh()
+        lay_key = (tuple(self._layout()), self._font_sizes, rh, self._width(),
+                   tuple(h["text"] for h in self._head.values()))
+        if lay_key != self._layout_key:
+            self._layout_key = lay_key
+            self._header_photo = self._header_image()
+            self.itemconfigure(self._header_item, image=self._header_photo)
+            self._shown = [None] * len(self._pool)  # otro alto de fila o de títulos: todas a su lugar de nuevo
+            self._at = (self._x, self._y)
+        self.coords(self._header_item, -self._x, 0)
+        # Cada fila visible va en la imagen del lienzo número (fila % cuántas entran): al desplazar se mueven
+        # todas juntas con una sola orden y solo las que recién entran cambian de imagen y de lugar.
+        first = self._y // rh
+        slots = self._body_h() // rh + 2
+        if len(self._pool) != slots:
+            for item in self._pool:
+                super().delete(item)
+            self._pool = [self.create_image(0, 0, anchor="nw", tags="row") for _ in range(slots)]
+            self._shown = [None] * slots  # (fila, imagen) que muestra cada una
+            self._at = (self._x, self._y)
+        dx, dy = self._at[0] - self._x, self._at[1] - self._y
+        if dx or dy:
+            self.move("row", dx, dy)
+            self._at = (self._x, self._y)
+        visible = set()
+        for r in range(first, min(len(self._order), first + slots)):
+            k = r % slots
+            visible.add(k)
+            img = self._row_image(self._order[r])
+            if self._shown[k] != (r, img):
+                if self._shown[k] is None or self._shown[k][1] is not img:
+                    self.itemconfigure(self._pool[k], image=img, state="normal")
+                if self._shown[k] is None or self._shown[k][0] != r:
+                    self.coords(self._pool[k], -self._x, hh + r * rh - self._y)
+                self._shown[k] = (r, img)
+        for k in range(slots):
+            if k not in visible and self._shown[k] is not None:
+                self.itemconfigure(self._pool[k], state="hidden")
+                self._shown[k] = None
+        self.tag_raise(self._header_item)
+        for cmd, view in ((self._ysc, self.yview()), (self._xsc, self.xview())):
+            if cmd:
+                cmd(*view)
+        self._prefill()
+
+    def _prefill(self):
+        """De fondo, de a poco: deja listas las filas que todavía no se vieron (primero las cercanas), así al
+        desplazar rápido ya están dibujadas."""
+        if self._prefill_job:
+            self.after_cancel(self._prefill_job)
+        self._prefill_job = self.after(30, self._prefill_step, self._y // self._rh(), 0)
+
+    def _prefill_step(self, center, done):
+        self._prefill_job = None
+        if not self.winfo_exists() or not self._order:
+            return
+        made = 0
+        order, rh = self._order, self._rh()
+        reach = max(center, len(order) - center)
+        d = done
+        while made < self.BATCH and d <= reach:
+            for n in (center + d, center - d - 1):
+                if 0 <= n < len(order):
+                    before = len(self._cache)
+                    self._row_image(order[n])
+                    made += len(self._cache) != before
+            d += 1
+        if d <= reach:
+            self._prefill_job = self.after(1, self._prefill_step, center, d)
+
+
+_PIL_FONT_FILES = ("segoeui.ttf", "arial.ttf", "DejaVuSans.ttf")
+_pil_fonts = {}
+
+
+def _pil_font(px):
+    if px not in _pil_fonts:
+        for name in _PIL_FONT_FILES:
+            try:
+                _pil_fonts[px] = ImageFont.truetype(name, px)
+                break
+            except OSError:
+                continue
+        else:
+            _pil_fonts[px] = ImageFont.load_default()
+    return _pil_fonts[px]
+
+
 class DeckBuilder(tk.Frame):
     """Armador de mazos, como el de la página oficial: formato y clase, cartas de esa clase y neutrales
     (hasta 3 copias, 40 en total), curva de costos, tipos, cuántos viales cuesta crearlo y el código para
@@ -1472,13 +2104,13 @@ class DeckBuilder(tk.Frame):
 
     # ---------- armado de la ventana ----------
     def _tree(self, parent, cols):
-        tree = ttk.Treeview(parent, columns=[c[0] for c in cols], show="headings", selectmode="browse")
+        tree = FastTree(parent, columns=[c[0] for c in cols], show="headings", selectmode="browse")
         for key, title, width, stretch in cols:
             tree.heading(key, text=title)
             tree.column(key, width=width, minwidth=width if not stretch else 120, stretch=stretch,
                         anchor="w" if stretch else "center")
         scale_columns(tree)
-        scroll = ttk.Scrollbar(parent, orient="vertical", command=tree.yview)
+        scroll = FastScrollbar(parent, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=scroll.set)
         tree.grid(row=1, column=0, sticky="nsew")
         scroll.grid(row=1, column=1, sticky="ns")
@@ -1577,8 +2209,6 @@ class DeckBuilder(tk.Frame):
         row3 = tk.Frame(info, bg=PANEL)
         row3.pack(fill="x", pady=(6, 0))
         ttk.Button(row3, text="🖼 Guardar como imagen", command=self.save_image).pack(side="left")
-        ttk.Button(row3, text="% Probabilidades", command=lambda: ProbabilityWindow(self)).pack(side="left",
-                                                                                             padx=(6, 0))
         self.status = tk.Label(info, text="", bg=PANEL, fg=MUTED, font=F(*FONT), anchor="w", justify="left", wraplength=300)
         self.status.pack(fill="x", pady=(6, 0))
         info.bind("<Configure>", lambda e: self.status.config(wraplength=max(200, e.width - 10)), add="+")
@@ -2051,62 +2681,6 @@ class DeckBuilder(tk.Frame):
         self._say(f"Imagen guardada en {path}")
 
 
-def hit_chance(copies, seen, deck=40, mulligan=False, hand=3):
-    """Probabilidad de tener al menos una de `copies` copias habiendo visto `seen` cartas (mano inicial incluida).
-    Con mulligan: si no está en la mano inicial se cambian las 3 (las nuevas salen del resto del mazo)."""
-    from math import comb
-    miss = lambda n, k, draw: comb(n - k, draw) / comb(n, draw) if draw <= n else 0.0
-    if copies <= 0:
-        return 0.0
-    if not mulligan:
-        return 1 - miss(deck, copies, seen)
-    rest = deck - hand
-    return 1 - miss(deck, copies, hand) * miss(rest, copies, hand) * miss(rest, copies, max(seen - hand, 0))
-
-
-class ProbabilityWindow(tk.Toplevel):
-    """«Probabilidades»: chance de tener al menos una copia de una carta del mazo en la mano, turno por turno."""
-
-    def __init__(self, builder):
-        super().__init__(builder)
-        self.b = builder
-        _dialog_base(self, "Probabilidades", 560, 540)
-        tk.Label(self, text="¿Qué chance hay de tenerla en la mano?", bg=PANEL, fg=INK,
-                 font=F("Segoe UI Semibold", 13), anchor="w").pack(fill="x")
-        tk.Label(self, text="Mano inicial de 3 cartas y 1 robo por turno (sin contar las cartas que hacen robar).",
-                 bg=PANEL, fg=MUTED, font=F(*FONT), anchor="w", wraplength=520, justify="left").pack(fill="x")
-        row = tk.Frame(self, bg=PANEL)
-        row.pack(fill="x", pady=(10, 4))
-        tk.Label(row, text="Carta:", bg=PANEL, fg=INK, font=F(*FONT)).pack(side="left", padx=(0, 6))
-        d = builder.data
-        self.options = {f"{d.cards[cid]['name_en']}  ×{n}": n for cid, n in
-                        sorted(builder.counts.items(), key=lambda kv: (d.cards[kv[0]]["cost"] or 0, d.cards[kv[0]]["name_en"]))}
-        self.options.update({f"Cualquiera de {n} cartas": n for n in (2, 3, 4, 5, 6, 9)})
-        self.choice = tk.StringVar(value=next(iter(self.options)))
-        box = ttk.Combobox(row, textvariable=self.choice, values=list(self.options), state="readonly", width=40)
-        box.pack(side="left")
-        box.bind("<<ComboboxSelected>>", lambda _: self.fill())
-        self.mulligan = tk.BooleanVar(value=True)
-        ttk.Checkbutton(self, text="En el cambio inicial (mulligan) devuelvo las 3 si no la tengo",
-                        variable=self.mulligan, command=self.fill, style="Panel.TCheckbutton").pack(anchor="w")
-        ttk.Button(self, text="Cerrar", style="Active.TButton", command=self.destroy).pack(side="bottom", anchor="e")
-        self.table = ttk.Treeview(self, columns=("turno", "vistas", "chance"), show="headings", height=11)
-        for key, text, w in (("turno", "Turno", 120), ("vistas", "Cartas vistas", 140), ("chance", "Chance", 140)):
-            self.table.heading(key, text=text)
-            self.table.column(key, width=w, anchor="center")
-        self.table.pack(fill="both", expand=True, pady=(8, 8))
-        self.fill()
-
-    def fill(self):
-        copies = self.options.get(self.choice.get(), 1)
-        self.table.delete(*self.table.get_children())
-        self.table.insert("", "end", values=("Mano inicial", 3, f"{hit_chance(copies, 3, mulligan=self.mulligan.get()):.0%}"))
-        for turn in range(1, 11):
-            seen = 3 + turn
-            self.table.insert("", "end", values=(f"Turno {turn}", seen,
-                                                 f"{hit_chance(copies, seen, mulligan=self.mulligan.get()):.0%}"))
-
-
 class CompareWindow(tk.Toplevel):
     """«Comparar»: dos cartas lado a lado (imagen, datos y efecto). La de la derecha se elige escribiendo su nombre."""
 
@@ -2129,6 +2703,9 @@ class CompareWindow(tk.Toplevel):
         tk.Label(top, text="(escribí parte del nombre, en inglés o en español)", bg=PANEL, fg=MUTED,
                  font=F(*FONT)).pack(side="left", padx=8)
         ttk.Button(top, text="Cerrar", command=self.destroy).pack(side="right")
+        self.en_btn = ttk.Button(top, text="Ver en español" if app.show_en else "Ver en inglés",
+                                 command=self._toggle_english)
+        self.en_btn.pack(side="right", padx=(0, 8))
         cols = tk.Frame(self, bg=PANEL)
         cols.pack(fill="both", expand=True)
         cols.columnconfigure((0, 1), weight=1, uniform="c")
@@ -2172,6 +2749,12 @@ class CompareWindow(tk.Toplevel):
             self._render(0)
             self._render(1)
 
+    def _toggle_english(self):
+        self.app.toggle_english()
+        self.en_btn.config(text="Ver en español" if self.app.show_en else "Ver en inglés")
+        self._render(0)
+        self._render(1)
+
     def _render(self, i):
         t, cid = self.sides[i], self.cards[i]
         t.config(state="normal")
@@ -2200,7 +2783,9 @@ class CompareWindow(tk.Toplevel):
             t.insert("end", f"{label}: ", "note")
             t.insert("end", f"{value}\n", "diff" if label in other_rows and other_rows[label] != value else ())
         t.insert("end", "\nEFECTO\n", "h")
-        if c["skill_en"] or c["skill_es"]:
+        if self.app.show_en and c["skill_en"]:
+            self.app.markup(c["skill_en"], "orig", t=t, go=lambda k, side=i: self._open(side, k))
+        elif c["skill_en"] or c["skill_es"]:
             self.app.markup(c["skill_es"] or c.get("skill_tr") or c["skill_en"],
                             "es" if c["skill_es"] else "tr" if c.get("skill_tr") else "en", t=t,
                             go=lambda k, side=i: self._open(side, k))
@@ -2286,7 +2871,7 @@ class DeckView(tk.Frame):
         self.related_label.pack(side="left", fill="x", expand=True)
         self.related_bar.bind("<Configure>", lambda e: self.related_label.config(wraplength=max(200, e.width - 180)))
         self.canvas = tk.Canvas(self.wrap, bg=BG, highlightthickness=0, yscrollincrement=24)
-        scroll = ttk.Scrollbar(self.wrap, orient="vertical", command=self.canvas.yview)
+        scroll = FastScrollbar(self.wrap, orient="vertical", command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=scroll.set)
         scroll.pack(side="right", fill="y")
         self.canvas.pack(side="left", fill="both", expand=True)
@@ -2356,9 +2941,9 @@ class DeckView(tk.Frame):
         small = F("Segoe UI", 9).metrics("linespace")
         related = self.related is not None
         tile_w = self.IMG_W + 2 * self.PAD
-        head_h = 0 if related else line + 6
-        foot_h = (small + line + 22) if related else 6
-        tile_h = head_h + self.IMG_H + foot_h + 2 * self.PAD
+        # Debajo de cada carta, − copias / máximo +; en las creadoras / lo que crea, además, una nota arriba de eso.
+        foot_h = (small + line + 22) if related else (line + 16)
+        tile_h = self.IMG_H + foot_h + 2 * self.PAD
         cols = max(1, (width - 8) // tile_w)
         left = 4 + ((width - 8) - cols * tile_w) // 2  # la grilla centrada
         full_deck = sum(b.counts.values()) >= decks.DECK_SIZE
@@ -2372,10 +2957,6 @@ class DeckView(tk.Frame):
             c.create_rectangle(x0 + 2, y0 + 2, x0 + tile_w - 2, y0 + tile_h - 2, outline=outline, width=3,
                                tags=("box", f"box{cid}"))
             y = y0 + self.PAD
-            if not related:
-                c.create_text(x0 + tile_w - self.PAD, y, anchor="ne", text=f"× {b.counts.get(cid, 0)}", fill=INK,
-                              font=F("Segoe UI Semibold", 13))
-                y += head_h
             tag = f"card{cid}"
             img = self._tile_image(card, load=False)
             if img:
@@ -2389,11 +2970,10 @@ class DeckView(tk.Frame):
             c.tag_bind(tag, "<Button-1>", lambda _, k=cid: self.open_card(k))
             c.tag_bind(tag, "<Enter>", lambda _: c.config(cursor="hand2"))
             c.tag_bind(tag, "<Leave>", lambda _: c.config(cursor=""))
-            if not related:
-                continue
             y += self.IMG_H + 4
-            c.create_text(x0 + tile_w / 2, y, anchor="n", text=note, fill=MUTED, font=F("Segoe UI", 9))
-            y += small + 6
+            if related:
+                c.create_text(x0 + tile_w / 2, y, anchor="n", text=note, fill=MUTED, font=F("Segoe UI", 9))
+                y += small + 6
             cy = y + (line + 10) / 2
             if why:  # no puede ir al mazo: se dice por qué
                 c.create_text(x0 + tile_w / 2, cy, text=self.WHY[why], fill=DeckBuilder.BAD,
@@ -2402,7 +2982,8 @@ class DeckView(tk.Frame):
             limit = card["deck_limit"] or 3
             bw, bh = 34, line + 10
             for sign, bx, enabled, delta in (("−", x0 + self.PAD, bool(b.counts.get(cid)), -1),
-                                             ("+", x0 + tile_w - self.PAD - bw, have < limit and not full_deck, 1)):
+                                             ("+", x0 + tile_w - self.PAD - bw,
+                                              have < limit and not full_deck and not b.cannot_add(cid), 1)):
                 btag = f"b{delta}_{cid}"
                 c.create_rectangle(bx, cy - bh / 2, bx + bw, cy + bh / 2, fill=FIELD if enabled else BG,
                                    outline=LINE, tags=(btag,))
@@ -2436,7 +3017,8 @@ class DeckView(tk.Frame):
             self._loading = self.after(1, self._load_images, todo[6:])
 
     def _change(self, cid, delta):
-        """− / + en la lista de creadoras / lo que crea: saca o agrega una copia al mazo."""
+        """− / + debajo de una carta: saca o agrega una copia al mazo. En el mazo, una carta que queda en 0 sigue a
+        la vista (para poder volver a agregarla) hasta que se cierra o se vuelve a abrir la vista del mazo."""
         self.builder.change(cid, delta)
         self._draw()
         self.head.destroy()
@@ -2444,7 +3026,7 @@ class DeckView(tk.Frame):
 
     def _tile_image(self, card, load=True):
         """Imagen chica de la carta. Con load=False solo la devuelve si ya está cargada."""
-        for lang, folder in (("es", "es419"), ("en", "eng")):
+        for lang, folder in IMAGE_ORDER[self.app.show_en]:
             h = card[f"img_{lang}"]
             path = IMAGES / folder / f"{h}.png" if h else None
             if path is not None and path.exists():
@@ -2477,7 +3059,7 @@ class DeckView(tk.Frame):
         t = self.text = tk.Text(self.panel, bg=PANEL, fg=INK, font=F(*FONT), wrap="word", relief="flat", padx=10,
                                 highlightthickness=0, cursor="xterm", insertwidth=0, selectbackground=ACCENT,
                                 selectforeground="#ffffff", inactiveselectbackground=ACCENT)
-        scroll = ttk.Scrollbar(self.panel, orient="vertical", command=t.yview)
+        scroll = FastScrollbar(self.panel, orient="vertical", command=t.yview)
         t.configure(yscrollcommand=scroll.set)
         scroll.pack(side="right", fill="y")
         t.pack(fill="both", expand=True)
@@ -2517,8 +3099,17 @@ class DeckView(tk.Frame):
         if not en and not es:
             return
         self.text.insert("end", "\n" + title + "\n", "h")
-        self.app.markup(es or tr or en, "es" if es else "tr" if tr else "en", t=self.text, go=self.open_card)
+        if self.app.show_en and en:
+            self.app.markup(en, "orig", t=self.text, go=self.open_card)
+        else:
+            self.app.markup(es or tr or en, "es" if es else "tr" if tr else "en", t=self.text, go=self.open_card)
         self.text.insert("end", "\n")
+
+    def toggle_english(self):
+        """«Ver en inglés»: el mismo ajuste que en la lista principal (vale en todo el programa)."""
+        self.app.toggle_english()
+        self._render()
+        self._draw()
 
     def _render(self):
         d, c, t, app = self.data, self.data.cards[self.card], self.text, self.app
@@ -2552,6 +3143,8 @@ class DeckView(tk.Frame):
         if c["evo_img_en"] or c["evo_img_es"]:
             ttk.Button(row, text="Ver normal" if self.evo else "Ver evolucionada", width=16,
                        command=self.toggle_evo).pack(side="left", padx=(0, 6))
+        ttk.Button(row, text="Ver en español" if app.show_en else "Ver en inglés", cursor="hand2",
+                   command=self.toggle_english).pack(side="left", padx=(0, 6))
         for kind, label, finder in (("creators", "⤴ Ver creadoras", d.creators_of),
                                     ("creations", "⤵ Ver lo que crea", d.creations_of)):
             sure, possible = finder(self.card)
@@ -2608,13 +3201,15 @@ class DeckView(tk.Frame):
 
 
 class App(tk.Tk):
+    RECENT_MAX = 10  # «🕘 Recientes»: cuántas cartas vistas recuerda
+
     def __init__(self, data, pending=None):
         super().__init__()
         import config
         self.data = data
         self.pending = pending or []  # novedades que el usuario decidió no actualizar al abrir
         self.favorites = load_favorites()
-        self.recent = [int(x) for x in load_settings().get("recientes", []) if int(x) in data.cards]
+        self.recent = [int(x) for x in load_settings().get("recientes", []) if int(x) in data.cards][:self.RECENT_MAX]
         self.show_en = False  # «Ver en inglés»: el detalle muestra el texto original
         import changes
         self.changes = changes.load()  # «Lo nuevo» de la última actualización e historial de cambios de balance
@@ -2727,7 +3322,7 @@ class App(tk.Tk):
             w = stack.pop()
             if isinstance(w, Flow) and w.winfo_ismapped():
                 w._layout(w.winfo_width())
-            elif isinstance(w, ttk.Treeview):
+            elif isinstance(w, (ttk.Treeview, FastTree)):
                 scale_columns(w)
             stack.extend(w.winfo_children())
         self._fit_filters(type("E", (), {"width": self.left.winfo_width()}))
@@ -2781,7 +3376,7 @@ class App(tk.Tk):
             box.insert("end", v)
         box.pack(side="left", fill="both", expand=True)
         if len(values) > 12:
-            sb = ttk.Scrollbar(frame, orient="vertical", command=box.yview)
+            sb = FastScrollbar(frame, orient="vertical", command=box.yview)
             box.configure(yscrollcommand=sb.set)
             sb.pack(side="right", fill="y")
 
@@ -2898,8 +3493,8 @@ class App(tk.Tk):
         # Barra principal (de lado a lado): búsqueda, contador y acciones.
         bar = ttk.Frame(self, padding=(12, 10, 12, 10))
         bar.pack(fill="x")
-        # El buscador ocupa el ancho de la columna de la lista (termina en el divisor y lo sigue al moverlo);
-        # sobre el detalle de la carta quedan el contador y los botones.
+        # El buscador ocupa la mitad del ancho de la columna de la lista (y lo sigue al mover el divisor);
+        # el resto de la barra queda para el contador y los botones.
         self.search_box = ttk.Frame(bar)
         ttk.Label(self.search_box, text="Buscar", style="Muted.TLabel").pack(side="left", padx=(0, 6))
         self.search = tk.StringVar()
@@ -2942,8 +3537,7 @@ class App(tk.Tk):
         # así el detalle usa todo el alto en vez de dejar libre el espacio al costado de los filtros.
         self.pane = ttk.PanedWindow(self, orient="horizontal")
         self.left = ttk.Frame(self.pane)
-        # (la barra y la columna empiezan en el mismo margen de 12 px, así el buscador termina justo en el divisor)
-        self.left.bind("<Configure>", lambda e: self.search_box.configure(width=max(160, e.width)), add="+")
+        self.left.bind("<Configure>", lambda e: self.search_box.configure(width=max(160, e.width // 2)), add="+")
         # Fila de botones de filtro (cada uno abre su panel) y, debajo, la fila de filtros activos.
         self.filter_groups = []
         self.filter_popups = {}
@@ -3155,7 +3749,7 @@ class App(tk.Tk):
         cols =(("name", "Nombre", 230), ("name_es", "Nombre en español", 210), ("cost", "Costo", 55),
                 ("class", "Clase", 95), ("type", "Tipo", 110), ("rarity", "Rareza", 85),
                 ("stats", "A/D", 55), ("set", "Expansión", 160))
-        self.tree = ttk.Treeview(left, columns=[c[0] for c in cols], show="headings", selectmode="browse", height=3)
+        self.tree = FastTree(left, columns=[c[0] for c in cols], show="headings", selectmode="browse")
         for key, title, width in cols:
             self.tree.heading(key, text=title, command=lambda k=key: self.sort_by(k))
             # Ancho mínimo: en ventanas angostas aparece la barra horizontal en vez de aplastar los nombres.
@@ -3171,8 +3765,8 @@ class App(tk.Tk):
         self.expanded = {}  # carta -> (ventana visible, contenido) de cada resumen abierto
         self.tree.bind("<Button-1>", self._arrow_click, add="+")
         self.tree.bind("<Configure>", lambda e: self._place_expansions(), add="+")
-        vscroll = ttk.Scrollbar(left, orient="vertical", command=self.tree.yview)
-        hscroll = ttk.Scrollbar(left, orient="horizontal", command=self.tree.xview)
+        vscroll = FastScrollbar(left, orient="vertical", command=self.tree.yview)
+        hscroll = FastScrollbar(left, orient="horizontal", command=self.tree.xview)
         self.tree.configure(yscrollcommand=lambda *a: (vscroll.set(*a), self._place_expansions()),
                             xscrollcommand=hscroll.set)
         self.tree.grid(row=0, column=0, sticky="nsew")
@@ -3203,15 +3797,11 @@ class App(tk.Tk):
         # Ancho fijo para que entre «🔊 10/11» (hasta 11 líneas por carta) sin que el botón cambie de tamaño.
         self.voice_btn = ttk.Button(nav, text="🔊", width=9, command=self.play_voice, state="disabled")
         self.voice_btn.pack(side="right", padx=(0, 6))
-        self.play_all_btn = ttk.Button(nav, text="▶ Todas", width=8, command=self.play_all, state="disabled")
-        self.play_all_btn.pack(side="right", padx=(0, 6))
-        self.play_all_job = None
         self.assist_btn = ttk.Button(nav, text="🎙", width=3, command=self.open_voice_assistant)
         self.assist_btn.pack(side="right", padx=(0, 6))
         if not voices:
             self.assist_btn.config(state="disabled")
         for b, tip in ((self.voice_btn, "Escuchar la siguiente línea de voz"),
-                       (self.play_all_btn, "Escuchar todas las líneas de voz de la carta, una detrás de otra"),
                        (self.assist_btn, "Asociar la voz de esta carta (asistente)")):
             b.bind("<Enter>", lambda e, t=tip, w=b: self.tooltip.show(t, w.winfo_rootx(), w.winfo_rooty() + w.winfo_height() - 12))
             b.bind("<Leave>", lambda e: self.tooltip.hide())
@@ -3221,7 +3811,7 @@ class App(tk.Tk):
                             highlightthickness=0, cursor="xterm", width=40, height=3,
                             selectbackground=ACCENT, selectforeground="#ffffff", inactiveselectbackground=ACCENT,
                             insertwidth=0)
-        tscroll = ttk.Scrollbar(right, orient="vertical", command=self.text.yview)
+        tscroll = FastScrollbar(right, orient="vertical", command=self.text.yview)
         self.text.configure(yscrollcommand=tscroll.set)
         tscroll.pack(side="right", fill="y")
         self.text.pack(fill="both", expand=True)
@@ -3296,7 +3886,7 @@ class App(tk.Tk):
         text = tk.Text(body, bg=PANEL, fg=INK, font=F(*FONT), wrap="word", relief="flat", highlightthickness=0,
                        cursor="xterm", padx=2, width=10, height=3, insertwidth=0,
                        selectbackground=ACCENT, selectforeground="#ffffff", inactiveselectbackground=ACCENT)
-        scroll = ttk.Scrollbar(body, orient="vertical", command=text.yview)
+        scroll = FastScrollbar(body, orient="vertical", command=text.yview)
         text.configure(yscrollcommand=scroll.set)
         scroll.pack(side="right", fill="y")
         text.pack(side="left", fill="both", expand=True)
@@ -3716,22 +4306,24 @@ class App(tk.Tk):
 
     def _full_effect(self, c):
         """Todo lo que hace la carta, como en el detalle: su efecto (con evolución y superevolución) y sus
-        efectos especiales (blasón, fe, cristalizar, acelerar). Texto oficial, si no la traducción propia."""
+        efectos especiales (blasón, fe, cristalizar, acelerar). Texto oficial, si no la traducción propia
+        (con «Ver en inglés», el original)."""
         def plain(text):
             lines = re.sub(r"<[^>]+>", "", re.sub(r"<hr>", "\n", text or "")).splitlines()
             return "\n".join(re.sub(r"[ \t]+", " ", ln).strip() for ln in lines if ln.strip())
-        parts = [plain(c["skill_es"] or c.get("skill_tr") or c["skill_en"])]
+        en = self.show_en
+        parts = [plain(c["skill_en"] if en and c["skill_en"] else c["skill_es"] or c.get("skill_tr") or c["skill_en"])]
         for e in c["specific"]:
             title = self.data.effect_title(e["key"])
             if e["key"] in ("crystal", "accelerate"):
                 title += f" · COSTO {e['cost']}"
-            body = plain(e.get("es") or e.get("tr") or e.get("en"))
+            body = plain(e.get("en") if en and e.get("en") else e.get("es") or e.get("tr") or e.get("en"))
             if body:
                 parts.append(f"{title}\n{body}")
         return "\n\n".join(p for p in parts if p) or "(sin efecto)"
 
     def _thumbnail(self, c):
-        for lang, folder in (("es", "es419"), ("en", "eng")):
+        for lang, folder in IMAGE_ORDER[self.show_en]:
             h = c[f"img_{lang}"]
             path = IMAGES / folder / f"{h}.png" if h else None
             if path is not None and path.exists():
@@ -3756,15 +4348,7 @@ class App(tk.Tk):
             if tree.exists(str(cid)):
                 self._fit_expansion(cid)
         rh = self._row_height()
-        # Fin de los títulos de las columnas = donde empieza la primera fila visible. (Con la lista desplazada,
-        # identify_row sobre los títulos devuelve filas que ya no se ven: se toma la primera con posición real.)
-        head = 0
-        for y in range(0, 100):
-            row = tree.identify_row(y)
-            box = tree.bbox(row) if row else ""
-            if box:
-                head = box[1]
-                break
+        head = tree._hh()  # fin de los títulos de las columnas: el recuadro no los tapa
         height, width = tree.winfo_height(), tree.winfo_width()
         for cid, info in self.expanded.items():
             view, content, rows = info["view"], info["content"], info["rows"]
@@ -3792,7 +4376,8 @@ class App(tk.Tk):
     # ---------- detalle ----------
     def load_image(self, card, evo):
         tries = []
-        for lang, folder in (("es", "es419"), ("en", "eng")):
+        # Con «Ver en inglés» (en cualquier parte del programa), primero la imagen en inglés.
+        for lang, folder in IMAGE_ORDER[self.show_en]:
             h = card[f"evo_img_{lang}" if evo else f"img_{lang}"]
             if h:
                 tries.append(IMAGES / folder / f"{h}.png")
@@ -3830,7 +4415,7 @@ class App(tk.Tk):
         if art.exists():
             return art
         c = self.data.cards[card_id]
-        for lang, folder in (("es", "es419"), ("en", "eng")):
+        for lang, folder in IMAGE_ORDER[self.show_en]:
             h = c[f"evo_img_{lang}" if evo else f"img_{lang}"]
             path = IMAGES / folder / f"{h}.png" if h else None
             if path is not None and path.exists():
@@ -3870,8 +4455,6 @@ class App(tk.Tk):
         heard = self.voice_pos.get((self.current, self.show_evo), 0)
         self.voice_btn.config(state="normal" if lines else "disabled",
                               text=f"🔊 {heard}/{len(lines)}" if lines else "🔊")
-        self.play_all_btn.config(state="normal" if lines else "disabled",
-                                 text="■ Parar" if self.play_all_job else "▶ Todas")
         # 🎙 solo con una carta seleccionada que tenga audio en el juego (y si las voces están disponibles).
         card = self.data.cards.get(self.current) if self.current is not None else None
         self.assist_btn.config(state="normal" if voices and card and self.card_has_audio(card) else "disabled")
@@ -3894,42 +4477,6 @@ class App(tk.Tk):
         path = voices.line_path(lines[i], self.voice_map[self.current]["bank"])
         voices.play(path)  # con un silencio adelante si el audio estuvo quieto (auriculares Bluetooth)
         self._update_voice_button()
-
-    def play_all(self):
-        """«▶ Todas»: todas las líneas de la carta seguidas (las normales y después las de evolucionada).
-        Apretar otra vez («■ Parar») o abrir otra carta las corta."""
-        if self.play_all_job:
-            return self.stop_all()
-        entry = self.voice_map.get(self.current) if self.current else None
-        if not entry:
-            return
-        queue_ = [voices.line_path(line, entry["bank"]) for line in entry["normal"] + entry.get("evo", [])]
-        self._play_next(self.current, queue_)
-
-    def _play_next(self, card_id, queue_):
-        import wave
-        if self.current != card_id or not queue_:
-            return self.stop_all(silence=False)
-        path = Path(queue_.pop(0))
-        try:
-            with wave.open(str(path)) as w:
-                length = w.getnframes() / w.getframerate()
-        except (OSError, EOFError, wave.Error):
-            length = 0
-        if length:
-            voices.play(path)
-        self.play_all_job = self.after(int(length * 1000) + 500, self._play_next, card_id, queue_)
-        self._update_voice_button()
-
-    def stop_all(self, silence=True):
-        if self.play_all_job:
-            self.after_cancel(self.play_all_job)
-        self.play_all_job = None
-        if silence:
-            import winsound
-            winsound.PlaySound(None, 0)
-        if self.current is not None:
-            self._update_voice_button()
 
     def open_voice_assistant(self):
         if self.current is None:
@@ -4043,14 +4590,11 @@ class App(tk.Tk):
         self.evo_btn.config(state="disabled")
         # Sin carta seleccionada no hay nada que escuchar ni a qué asociarle una voz.
         self.voice_btn.config(state="disabled", text="🔊")
-        self.play_all_btn.config(state="disabled", text="▶ Todas")
         self.assist_btn.config(state="disabled")
 
     def show(self, card_id, remember=True, from_list=False):
         if remember and self.current and self.current != card_id:
             self.history.append(self.current)
-        if self.play_all_job and card_id != self.current:
-            self.stop_all()
         self.current = card_id
         self.show_evo = False
         self.voice_pos.clear()  # al abrir una carta (otra o la misma de nuevo) las voces arrancan de la línea 1
@@ -4249,12 +4793,19 @@ class App(tk.Tk):
             self.refresh()
 
     def toggle_english(self):
+        """«Ver en inglés» / «Ver en español»: vale en todo el programa (detalle, resúmenes de la lista, vista del
+        mazo, Comparar)."""
         self.show_en = not self.show_en
         if self.current is not None:
             self.show(self.current, remember=False)
+        for cid in list(self.expanded):  # los resúmenes abiertos en la lista, en el otro idioma
+            self._collapse(cid)
+            if self.tree.exists(str(cid)):
+                self._expand(cid)
 
     def _remember_recent(self, card_id):
-        self.recent = [card_id] + [c for c in self.recent if c != card_id][:19]
+        # Las últimas RECENT_MAX cartas vistas: al ver una más, la más vieja sale de la lista.
+        self.recent = ([card_id] + [c for c in self.recent if c != card_id])[:self.RECENT_MAX]
         save_settings(recientes=self.recent)
 
     # ---------- menú «Ayuda» ----------

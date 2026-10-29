@@ -1,6 +1,15 @@
 """Novedades de cada versión, para la ventana «Novedades de la versión» (se muestra sola la primera vez que se abre
 una versión nueva). La más nueva va primero."""
 NOVEDADES = [
+    ("1.1.1", [
+        "Las listas de cartas (la principal y las del armador) se desplazan fluidas, al ritmo de la pantalla.",
+        "«Ver mazo»: − y + debajo de cada carta del mazo para sacar o agregar copias ahí mismo.",
+        "«Ver en inglés» en todo el programa (también la imagen): resúmenes ▼, «Ver mazo» y «Comparar».",
+        "Tema claro más suave: gris, ya no blanco.",
+        "🕘 Recientes recuerda las últimas 10 cartas.",
+        "Buscador más chico, con más lugar para el resto.",
+        "Se quitaron «▶ Todas» (voces) y «Probabilidades» (armador).",
+    ]),
     ("1.1.0", [
         "Menú «Ayuda»: manual, atajos de teclado, reportar un error, sugerir una corrección y copias de seguridad.",
         "★ Favoritas: marcá cartas y filtralas con «Mostrar → Solo mis favoritas».",
