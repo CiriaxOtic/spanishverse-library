@@ -2001,6 +2001,7 @@ class DeckView(tk.Frame):
         if remember and self.card is not None and self.card != card_id:
             self.history.append(self.card)
         self.card, self.evo = card_id, False
+        self.voice_pos.clear()  # como en la lista: al abrir una carta (otra o la misma de nuevo) las voces arrancan de la 1
         self.back_btn.config(state="normal" if self.history else "disabled")
         if not self.panel.winfo_ismapped():
             self.panel.pack(side="right", fill="y", padx=(12, 0), before=self.wrap)

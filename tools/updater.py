@@ -290,11 +290,14 @@ def prepare_program_update(progress):
     script = INSTALL_DIR.parent / "_instalar_version_nueva.ps1"
     script.write_text(
         "$ErrorActionPreference = 'SilentlyContinue'\n"
-        f"Write-Host 'Instalando Spanishverse Library {version}... (esta ventana se cierra sola)'\n"
         f"Wait-Process -Id {os.getpid()} -Timeout 120\n"
         "Start-Sleep -Seconds 1\n"
         f"robocopy '{q(src)}' '{q(ROOT)}' /E /R:10 /W:2 /XF {' '.join(KEEP_FILES)} "
         f"/XD {' '.join(KEEP_DIRS)} /NFL /NDL /NJH /NJS /NP | Out-Null\n"
+        # robocopy: 8 o más = no pudo copiar algo; corre sin ventana, así que se anota en errores.log
+        "if ($LASTEXITCODE -ge 8) { Add-Content -Path "
+        f"'{q(ROOT / 'errores.log')}' -Value \"$(Get-Date) Instalación de la versión {version}: no se pudieron "
+        "copiar todos los archivos (código $LASTEXITCODE)\" }\n"
         f"Start-Process -FilePath '{q(exe)}' -ArgumentList '--actualizar' -WorkingDirectory '{q(ROOT)}'\n"
         "Start-Sleep -Seconds 3\n"
         f"Remove-Item -Recurse -Force '{q(INSTALL_DIR)}'\n"
@@ -325,10 +328,13 @@ def program_update(info):
 
 
 def run_program_update(script):
-    """Corre el script de instalación en su propia ventana (el programa tiene que cerrarse enseguida)."""
+    """Corre el script de instalación sin ninguna ventana (el programa tiene que cerrarse enseguida y se vuelve a
+    abrir solo cuando termina de copiar)."""
     import subprocess
-    subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
-                     creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0), cwd=str(ROOT.parent))
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    subprocess.Popen(["powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy",
+                      "Bypass", "-File", str(script)], creationflags=flags, cwd=str(ROOT.parent),
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 # ---------- pasos locales ----------
