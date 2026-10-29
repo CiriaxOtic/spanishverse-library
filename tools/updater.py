@@ -17,6 +17,8 @@ import json
 import shutil
 import sqlite3
 import sys
+import time
+import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -123,27 +125,74 @@ def _merge_mapping(remote):
     voices.save_mapping(local)
 
 
+def download(url, dest, progress, label="", tries=6):
+    """Baja url a dest. Si dest ya existe a medias (un corte de internet, la ventana cerrada), sigue desde donde
+    quedó en vez de empezar de cero; si se corta en el medio, reintenta solo. Devuelve True si terminó."""
+    for attempt in range(1, tries + 1):
+        have = dest.stat().st_size if dest.exists() else 0
+        headers = dict(HEADERS, **({"Range": f"bytes={have}-"} if have else {}))
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=60) as r:
+                if have and r.status != 206:  # el servidor no deja retomar: desde cero
+                    have = 0
+                total = have + int(r.headers.get("Content-Length") or 0)
+                if have:
+                    progress(f"    retomando desde {have >> 20} MB de {total >> 20} MB")
+                with open(dest, "ab" if have else "wb") as out:
+                    done, last = have, -1
+                    while chunk := r.read(1 << 20):
+                        out.write(chunk)
+                        done += len(chunk)
+                        pct = done * 100 // total if total else -1
+                        if pct // 10 != last // 10:
+                            progress(f"    {label}{pct}%" if pct >= 0 else f"    {label}{done >> 20} MB")
+                            last = pct
+            return True
+        except urllib.error.HTTPError as e:
+            if e.code == 416:  # ya estaba completo
+                return True
+            progress(f"    error {e.code}; reintento {attempt}/{tries}...")
+        except Exception as e:  # corte de internet, tiempo de espera
+            progress(f"    se cortó la descarga ({e}); reintento {attempt}/{tries}...")
+        time.sleep(min(60, 5 * attempt))
+    return False
+
+
+def _size_mb(text):
+    try:
+        return float(str(text).split()[0])
+    except (ValueError, IndexError):
+        return 1000.0
+
+
 def sync_packs(info, progress):
-    """Paquetes de imágenes (zip): se bajan si falta alguno de sus archivos."""
+    """Paquetes de imágenes (zip): se bajan si falta alguno de sus archivos. Lo bajado a medias se retoma."""
+    import setup_checks
+    todo = []
     for pack in info.get("paquetes") or []:
         folder = ROOT / pack["carpeta"]
         missing = [f for f in pack.get("archivos", []) if not (folder / f).exists()]
-        if not missing:
-            continue
+        if missing:
+            todo.append((pack, folder, missing))
+    if not todo:
+        return
+    # Espacio: el zip y lo descomprimido conviven un momento, y después vienen las voces (~1,5 GB).
+    need_gb = max(_size_mb(p.get("tamaño")) for p, _, _ in todo) * 2 / 1024 + \
+        sum(_size_mb(p.get("tamaño")) for p, _, _ in todo) / 1024 + 1.5
+    free = setup_checks.free_gb(ROOT)
+    if free is not None and free < need_gb:
+        progress(f"  ¡Falta espacio en el disco! Hay {free:.1f} GB libres y hacen falta unos {need_gb:.1f} GB para las "
+                 "imágenes y las voces. Liberá espacio (o mové la carpeta del programa a otro disco) y volvé a "
+                 "actualizar. Las imágenes no se bajaron.")
+        return
+    for pack, folder, missing in todo:
         progress(f"  bajando «{pack['nombre']}» ({len(missing)} imágenes que faltan, {pack.get('tamaño', '?')})...")
         tmp = ROOT / (pack["archivo"] + ".part")
+        if not download(pack["url"], tmp, progress):
+            progress(f"  no se pudo terminar «{pack['nombre']}»: lo bajado queda guardado y la próxima vez sigue "
+                     "desde ahí.")
+            continue
         try:
-            with urllib.request.urlopen(urllib.request.Request(pack["url"], headers=HEADERS), timeout=60) as r, \
-                    open(tmp, "wb") as out:
-                total = int(r.headers.get("Content-Length") or 0)
-                done, last = 0, -1
-                while chunk := r.read(1 << 20):
-                    out.write(chunk)
-                    done += len(chunk)
-                    pct = done * 100 // total if total else -1
-                    if pct // 10 != last // 10:
-                        progress(f"    {pct}%" if pct >= 0 else f"    {done >> 20} MB")
-                        last = pct
             folder.mkdir(parents=True, exist_ok=True)
             with zipfile.ZipFile(tmp) as z:
                 for name in z.namelist():
@@ -156,11 +205,83 @@ def sync_packs(info, progress):
                     elif name in missing or not (folder / name).exists():
                         z.extract(name, folder)
             progress(f"  «{pack['nombre']}» listo")
+            tmp.unlink()
+        except zipfile.BadZipFile:
+            progress(f"  «{pack['nombre']}» llegó dañado; se vuelve a bajar la próxima vez.")
+            tmp.unlink()
         except Exception as e:
-            progress(f"  no se pudo bajar «{pack['nombre']}»: {e}")
-        finally:
-            if tmp.exists():
-                tmp.unlink()
+            progress(f"  no se pudo descomprimir «{pack['nombre']}»: {e}")
+
+
+# ---------- versión nueva del programa ----------
+INSTALL_DIR = ROOT / "_actualizacion"
+# Lo que es del usuario no se pisa al instalar una versión nueva (se conserva tal cual).
+KEEP_FILES = ["ajustes.json", "mapping.json", "datos_descargados.json", "errores.log"]
+KEEP_DIRS = ["mazos", "images", "voices", "traducciones", "raw", "_actualizacion"]
+
+
+def prepare_program_update(progress):
+    """Baja la versión nueva del programa (.exe empaquetado) y prepara su instalación. Devuelve la ruta del script
+    que la instala (hay que correrlo después de cerrar el programa) o None si no hay nada que instalar."""
+    import os
+    info = remote_info()
+    version = new_version(info)
+    program = (info or {}).get("programa")
+    if not version or not program:
+        progress("No hay una versión nueva para instalar.")
+        return None
+    INSTALL_DIR.mkdir(exist_ok=True)
+    progress(f"Bajando la versión {version} ({program.get('tamaño', '?')})...")
+    zpath = INSTALL_DIR / "programa.zip"
+    if not download(program["url"], zpath, progress):
+        progress("No se pudo bajar; lo bajado queda guardado y la próxima vez sigue desde ahí.")
+        return None
+    # Se descomprime en una carpeta temporal de nombre corto y con el prefijo de rutas largas de Windows: dentro de
+    # la carpeta del programa algunas rutas internas pasarían el límite de 260 caracteres.
+    import tempfile
+    new = Path(tempfile.gettempdir()) / "spanishverse_nuevo"
+    long = lambda p: "\\\\?\\" + str(p.resolve())
+    if new.exists():
+        shutil.rmtree(long(new), ignore_errors=True)
+    try:
+        with zipfile.ZipFile(zpath) as z:
+            z.extractall(long(new))
+    except zipfile.BadZipFile:
+        zpath.unlink()
+        progress("La descarga llegó dañada; probá de nuevo.")
+        return None
+    except OSError as e:
+        progress(f"No se pudo descomprimir la versión nueva ({e}). Liberá espacio en el disco y probá de nuevo.")
+        return None
+    src = next((p.parent for p in new.rglob("Spanishverse Library.exe")), None)
+    if src is None:
+        progress("La descarga no tiene el programa; probá de nuevo más tarde.")
+        return None
+    q = lambda s: str(s).replace("'", "''")
+    exe = ROOT / "Spanishverse Library.exe"
+    script = INSTALL_DIR.parent / "_instalar_version_nueva.ps1"
+    script.write_text(
+        "$ErrorActionPreference = 'SilentlyContinue'\n"
+        f"Write-Host 'Instalando Spanishverse Library {version}... (esta ventana se cierra sola)'\n"
+        f"Wait-Process -Id {os.getpid()} -Timeout 120\n"
+        "Start-Sleep -Seconds 1\n"
+        f"robocopy '{q(src)}' '{q(ROOT)}' /E /R:10 /W:2 /XF {' '.join(KEEP_FILES)} "
+        f"/XD {' '.join(KEEP_DIRS)} /NFL /NDL /NJH /NJS /NP | Out-Null\n"
+        f"Start-Process -FilePath '{q(exe)}' -WorkingDirectory '{q(ROOT)}'\n"
+        "Start-Sleep -Seconds 3\n"
+        f"Remove-Item -Recurse -Force '{q(INSTALL_DIR)}'\n"
+        f"Remove-Item -Recurse -Force -LiteralPath '\\\\?\\{q(new.resolve())}'\n"
+        "Remove-Item -Force $PSCommandPath\n",
+        encoding="utf-8-sig")
+    progress(f"Versión {version} lista para instalar.")
+    return script
+
+
+def run_program_update(script):
+    """Corre el script de instalación en su propia ventana (el programa tiene que cerrarse enseguida)."""
+    import subprocess
+    subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+                     creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0), cwd=str(ROOT.parent))
 
 
 # ---------- pasos locales ----------
@@ -223,7 +344,9 @@ def _build():
 def _voices(progress):
     import voices, auto_voices
     if game_data() is None:
-        print("No encontré Shadowverse: Worlds Beyond instalado en Steam: las voces nuevas se suman cuando lo esté.")
+        print("No encontré Shadowverse: Worlds Beyond en las bibliotecas de Steam. Si lo tenés instalado en otro lugar, "
+              "usá «Carpeta del juego…» (abajo en esta ventana) y volvé a actualizar. Sin el juego, todo lo demás "
+              "funciona igual, solo que sin voces.")
         return
     voices.build_cache(progress=lambda s: print(s))
     print(f"Voces asignadas automáticamente: {auto_voices.fill_mapping()} cartas")
@@ -266,7 +389,8 @@ def run(progress=_console, with_voices=True):
     _step("Ilustraciones sin marco...", progress, _art)
     after = _count()
     progress(f"Listo: {after} cartas" + (f" ({after - before} nuevas)." if after > before else "."))
-    return {"version_nueva": new_version(info), "cartas_antes": before, "cartas_despues": after}
+    return {"version_nueva": new_version(info), "cartas_antes": before, "cartas_despues": after,
+            "programa": (info or {}).get("programa")}
 
 
 def _count():

@@ -3,6 +3,7 @@
 Lee cards.db y la carpeta images/ que arman tools/fetch_cards.py y tools/build_db.py.
 Abrir con doble clic (usa pythonw, sin consola).
 """
+import queue
 import re
 import sqlite3
 import sys
@@ -772,6 +773,31 @@ def load_corrections():
         return {}
 
 
+def choose_game_folder(parent):
+    """Elegir a mano la carpeta del juego (si no está en una biblioteca de Steam que el programa encuentre solo)."""
+    from tkinter import filedialog
+    import paths
+    now = paths.game_data()
+    folder = filedialog.askdirectory(
+        parent=parent, title="Elegí la carpeta donde está instalado Shadowverse: Worlds Beyond",
+        initialdir=str(now) if now else None, mustexist=True)
+    if not folder:
+        return False
+    found = paths.find_game_in(folder)
+    if found is None:
+        messagebox.showwarning(
+            "Carpeta del juego",
+            "En esa carpeta no encontré los audios de Shadowverse: Worlds Beyond.\n\nElegí la carpeta del juego "
+            "(«ShadowverseWB», la que tiene «ShadowverseWB.exe») o la biblioteca de Steam donde está instalado. "
+            "Si está en otra PC o en una carpeta con contraseña, primero tiene que poder abrirse desde el Explorador "
+            "de Windows.", parent=parent)
+        return False
+    paths.save_setting("carpeta_juego", str(found))
+    messagebox.showinfo("Carpeta del juego", f"Listo: el programa va a usar el juego de\n{found}\n\nApretá «⟳ Actualizar» "
+                        "para preparar las voces.", parent=parent)
+    return True
+
+
 def restart_program(window):
     """Cierra el programa y lo vuelve a abrir (para cargar las cartas recién actualizadas)."""
     import subprocess
@@ -784,15 +810,18 @@ def restart_program(window):
 class UpdateWindow(tk.Toplevel):
     """Ventana de «Actualizar»: corre tools/updater.py en segundo plano y muestra lo que va haciendo."""
 
-    def __init__(self, master, first_time=False, on_close=None):
+    def __init__(self, master, first_time=False, on_close=None, program_only=False):
         super().__init__(master)
         self.title("Actualizar Spanishverse Library")
+        self.program_only = program_only
         self.configure(bg=PANEL, padx=16, pady=14)
         self.geometry("720x480")
         self.minsize(520, 340)
         self.on_close = on_close
         self.protocol("WM_DELETE_WINDOW", self.close)
-        intro = ("Primera vez: se bajan las imágenes de las cartas y las ilustraciones, y se preparan las voces del "
+        intro = ("Se baja la versión nueva del programa y se instala sola: el programa se cierra y se vuelve a abrir. "
+                 "Tus mazos, voces, imágenes y ajustes se conservan." if program_only else
+                 "Primera vez: se bajan las imágenes de las cartas y las ilustraciones, y se preparan las voces del "
                  "juego. Puede tardar un buen rato; podés dejarlo trabajando." if first_time else
                  "Se bajan las cartas nuevas con sus imágenes, traducciones, voces e ilustraciones.")
         tk.Label(self, text="Actualizando", bg=PANEL, fg=INK, font=F("Segoe UI Semibold", 13)).pack(anchor="w")
@@ -801,6 +830,9 @@ class UpdateWindow(tk.Toplevel):
         self.bar = ttk.Progressbar(self, mode="indeterminate")
         self.bar.pack(fill="x")
         self.bar.start(12)
+        # Los botones se ubican abajo antes que el registro: así el registro no los empuja fuera de la ventana.
+        self.buttons = tk.Frame(self, bg=PANEL)
+        self.buttons.pack(side="bottom", fill="x")
         frame = tk.Frame(self, bg=PANEL)
         frame.pack(fill="both", expand=True, pady=8)
         self.log = tk.Text(frame, bg=FIELD, fg=INK, relief="flat", font=F("Consolas", 9), wrap="word",
@@ -809,15 +841,38 @@ class UpdateWindow(tk.Toplevel):
         self.log.configure(yscrollcommand=sb.set)
         sb.pack(side="right", fill="y")
         self.log.pack(side="left", fill="both", expand=True)
-        self.buttons = tk.Frame(self, bg=PANEL)
-        self.buttons.pack(fill="x")
         self.close_btn = ttk.Button(self.buttons, text="Cerrar", command=self.close, state="disabled")
         self.close_btn.pack(side="right")
+        # Para quien tiene el juego fuera de las bibliotecas de Steam que el programa encuentra solo.
+        ttk.Button(self.buttons, text="🎮 Carpeta del juego…", command=lambda: choose_game_folder(self)).pack(side="left")
         self.running = True
+        # El trabajo va en otro hilo y deja sus mensajes en una cola; la ventana los lee desde su propio hilo
+        # (tkinter no se puede tocar desde otro hilo).
+        self.messages = queue.Queue()
         threading.Thread(target=self._work, daemon=True).start()
+        self.after(100, self._poll)
 
     def write(self, text):
-        self.after(0, self._append, text)
+        self.messages.put(("texto", text))
+
+    def _poll(self):
+        if not self.winfo_exists():
+            return
+        lines = []
+        while not self.messages.empty():
+            kind, value = self.messages.get()
+            if kind == "fin":
+                self._append("\n".join(lines)) if lines else None
+                self._done(value)
+                return
+            if kind == "instalar":
+                self._append("\n".join(lines)) if lines else None
+                self._install(value)
+                return
+            lines.append(value)
+        if lines:
+            self._append("\n".join(lines))
+        self.after(100, self._poll)
 
     def _append(self, text):
         self.log.configure(state="normal")
@@ -826,13 +881,49 @@ class UpdateWindow(tk.Toplevel):
         self.log.configure(state="disabled")
 
     def _work(self):
+        if self.program_only:
+            return self._work_program()
         try:
             import updater
             result = updater.run(progress=self.write)
         except Exception as e:  # no debería pasar: cada paso maneja sus errores
             self.write(f"Error inesperado: {e}")
             result = {}
-        self.after(0, self._done, result)
+        self.messages.put(("fin", result))
+
+    def _work_program(self):
+        try:
+            import updater
+            script = updater.prepare_program_update(self.write)
+        except Exception as e:
+            self.write(f"Error inesperado: {e}")
+            script = None
+        self.messages.put(("instalar", script))
+
+    def _install(self, script):
+        """La versión nueva ya está bajada: se cierra el programa y un script la copia y lo vuelve a abrir."""
+        self.running = False
+        self.bar.stop()
+        if not script:
+            self.close_btn.configure(state="normal")
+            return
+        import updater
+        self._append("\nCerrando para instalar...")
+        self.update()
+        updater.run_program_update(script)
+        self.after(300, self.master.destroy)
+
+    def install_new_version(self):
+        if not messagebox.askyesno("Instalar la versión nueva",
+                                   "Se va a bajar e instalar la versión nueva. El programa se cierra y se vuelve a abrir "
+                                   "solo. Tus mazos, voces, imágenes y ajustes se conservan.\n\n¿Seguir?", parent=self):
+            return
+        self.program_only = self.running = True
+        self.close_btn.configure(state="disabled")
+        self.bar.configure(mode="indeterminate")
+        self.bar.start(12)
+        threading.Thread(target=self._work_program, daemon=True).start()
+        self.after(100, self._poll)
 
     def _done(self, result):
         self.running = False
@@ -841,13 +932,20 @@ class UpdateWindow(tk.Toplevel):
         self.close_btn.configure(state="normal")
         if result.get("version_nueva"):
             import config
-            self.write(f"\nHay una versión nueva del programa ({result['version_nueva']}). Bajala desde la página "
-                       "de GitHub para tener las últimas mejoras.")
-            ttk.Button(self.buttons, text="Ir a la descarga",
-                       command=lambda: webbrowser.open(config.releases_page())).pack(side="left")
+            import paths
+            if paths.FROZEN and result.get("programa"):
+                self._append(f"\nHay una versión nueva del programa ({result['version_nueva']}). Apretá «Instalar la "
+                             "versión nueva»: se instala sola y conserva tus mazos, voces e imágenes.")
+                ttk.Button(self.buttons, text="⬇ Instalar la versión nueva", style="Active.TButton",
+                           command=self.install_new_version).pack(side="left", padx=(8, 0))
+            else:
+                self._append(f"\nHay una versión nueva del programa ({result['version_nueva']}). Bajala desde la "
+                             "página de GitHub para tener las últimas mejoras.")
+                ttk.Button(self.buttons, text="Ir a la descarga",
+                           command=lambda: webbrowser.open(config.releases_page())).pack(side="left", padx=(8, 0))
         ttk.Button(self.buttons, text="Reiniciar el programa", style="Active.TButton",
                    command=lambda: restart_program(self.master)).pack(side="right", padx=(0, 8))
-        self.write("\nPara ver lo nuevo, reiniciá el programa.")
+        self._append("\nPara ver lo nuevo, reiniciá el programa.")
 
     def close(self):
         if self.running and not messagebox.askyesno(
@@ -3034,9 +3132,22 @@ class App(tk.Tk):
             self.after(0, lambda: messagebox.askyesno("Cartas nuevas", msg, parent=self) and self.open_update())
         elif new_version:
             import config
-            msg = f"Hay una versión nueva del programa ({new_version}).\n\n¿Abrir la página de descarga?"
-            self.after(0, lambda: messagebox.askyesno("Versión nueva", msg, parent=self)
-                       and webbrowser.open(config.releases_page()))
+            import paths
+            if paths.FROZEN:  # el .exe se instala solo la versión nueva
+                msg = (f"Hay una versión nueva del programa ({new_version}).\n\n¿Instalarla ahora? Se baja sola, el "
+                       "programa se cierra y se vuelve a abrir. Tus mazos, voces, imágenes y ajustes se conservan.")
+                self.after(0, lambda: messagebox.askyesno("Versión nueva", msg, parent=self)
+                           and self.open_program_update())
+            else:
+                msg = f"Hay una versión nueva del programa ({new_version}).\n\n¿Abrir la página de descarga?"
+                self.after(0, lambda: messagebox.askyesno("Versión nueva", msg, parent=self)
+                           and webbrowser.open(config.releases_page()))
+
+    def open_program_update(self):
+        if self.update_win is not None and self.update_win.winfo_exists():
+            self.update_win.lift()
+            return
+        self.update_win = UpdateWindow(self, program_only=True)
 
     def open_deck_builder(self):
         """El armador de mazos ocupa el lugar de los filtros y la lista de cartas (el botón lo abre y lo cierra)."""
@@ -3354,6 +3465,8 @@ def main():
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Spanishverse.Library")
     except Exception:
         pass
+    if not install_checks():
+        return
     if not DB.exists():  # sin base de cartas: se arma bajando todo, y después se abre el programa
         root = tk.Tk()
         root.withdraw()
@@ -3365,7 +3478,60 @@ def main():
     app = App(Data(DB))
     if "--actualizar" in sys.argv:  # abre directamente la ventana de actualización
         app.after(500, app.open_update)
+    elif first_run():
+        app.after(800, lambda: welcome(app))
     app.mainloop()
+
+
+def install_checks():
+    """Errores comunes al instalar: se avisan con una explicación en vez de fallar después. False = no abrir."""
+    import setup_checks
+    root = tk.Tk()
+    root.withdraw()
+    title = "Spanishverse Library"
+    try:
+        if setup_checks.running_from_zip(ROOT):
+            messagebox.showerror(title, "Abriste el programa sin descomprimirlo.\n\nCerrá esta ventana, buscá el archivo "
+                                 "«SpanishverseLibrary-….zip» que bajaste, hacé clic derecho sobre él → «Extraer todo…», "
+                                 "elegí una carpeta (por ejemplo, Documentos) y abrí «Spanishverse Library.exe» desde la "
+                                 "carpeta descomprimida.", parent=root)
+            return False
+        if not setup_checks.writable(ROOT):
+            messagebox.showerror(title, "Windows no deja guardar archivos en esta carpeta:\n"
+                                 f"{ROOT}\n\nMové la carpeta «Spanishverse Library» entera a otro lugar, por ejemplo "
+                                 "Documentos o el Escritorio (no a «Archivos de programa»), y abrí el programa desde ahí.",
+                                 parent=root)
+            return False
+        if setup_checks.in_onedrive(ROOT) and not load_settings().get("aviso_onedrive"):
+            save_settings(aviso_onedrive=True)
+            messagebox.showwarning(title, "La carpeta del programa está dentro de OneDrive:\n"
+                                   f"{ROOT}\n\nOneDrive va a subir a la nube las imágenes (unos 3 GB) y puede llenar tu "
+                                   "espacio de OneDrive. Te conviene mover la carpeta «Spanishverse Library» a un lugar "
+                                   "fuera de OneDrive (por ejemplo, C:\\Juegos). Este aviso no se vuelve a mostrar.",
+                                   parent=root)
+    finally:
+        root.destroy()
+    return True
+
+
+def first_run():
+    """Todavía no se bajaron las imágenes de las cartas: es la primera vez."""
+    return not any((IMAGES / d).glob("*.png") for d in ("eng", "es419"))
+
+
+def welcome(app):
+    """Primera vez: ofrece el acceso directo del escritorio (una sola vez) y empieza a bajar todo."""
+    import setup_checks
+    import paths
+    if paths.FROZEN and not load_settings().get("acceso_directo_preguntado"):
+        save_settings(acceso_directo_preguntado=True)
+        if messagebox.askyesno("Bienvenido a Spanishverse Library",
+                               "¿Querés un acceso directo en el escritorio para abrir el programa?", parent=app):
+            exe = setup_checks.program_path()
+            if setup_checks.create_shortcut(exe, icon=exe) is None:
+                messagebox.showinfo("Acceso directo", "No se pudo crear. Podés hacerlo a mano: clic derecho en "
+                                    "«Spanishverse Library.exe» → «Enviar a» → «Escritorio».", parent=app)
+    app.open_update(first_time=True)
 
 
 if __name__ == "__main__":

@@ -62,11 +62,26 @@ def _steam_libraries():
     return out
 
 
+def find_game_in(folder):
+    """Carpeta de audios (…/Persistent/dat) dentro de una carpeta elegida a mano, o None. Sirve elegir la propia
+    carpeta «dat», la del juego («ShadowverseWB»), «ShadowverseWB_Data», la biblioteca de Steam o «steamapps»."""
+    folder = Path(folder)
+    rest = GAME_SUBDIR.parts  # steamapps / common / ShadowverseWB / ShadowverseWB_Data / Persistent / dat
+    for i in range(len(rest) + 1):
+        p = folder.joinpath(*rest[i:])
+        try:
+            if p.name == "dat" and p.is_dir() and any(p.iterdir()):
+                return p
+        except OSError:  # carpeta sin permiso de lectura
+            return None
+    return None
+
+
 def game_data():
     """Carpeta de audios del juego, o None si no está instalado (o no se encontró)."""
     chosen = load_settings().get("carpeta_juego")
-    if chosen and Path(chosen).is_dir():
-        return Path(chosen)
+    if chosen and (found := find_game_in(chosen)):
+        return found
     for lib in _steam_libraries():
         p = lib / GAME_SUBDIR
         if p.is_dir():

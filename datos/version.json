@@ -1,6 +1,10 @@
 {
- "app": "1.0.1",
+ "app": "1.0.2",
  "descarga": "https://github.com/CiriaxOtic/spanishverse-library/releases/latest",
+ "programa": {
+  "url": "https://github.com/CiriaxOtic/spanishverse-library/releases/download/v1.0.2/SpanishverseLibrary-1.0.2.zip",
+  "tamaño": "45 MB"
+ },
  "archivos": {
   "traducciones/lore.json": "13113ab2384938c09ecb772443b08396bd72a814",
   "traducciones/correcciones.json": "e5f3f223eef6774807aa4e896a58a4574e6fb54c",

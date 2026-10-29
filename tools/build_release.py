@@ -128,7 +128,12 @@ def make_repo(packs):
     (REPO / ".gitignore").write_text("cards.db\nimages/\nvoices/cache/\nvoices/index*\nvoices/profiles.npy\n"
                                      "mazos/\najustes.json\nraw/\nwork/\npublicar/\n__pycache__/\n"
                                      "datos_descargados.json\n", encoding="utf-8")
+    program_zip = f"SpanishverseLibrary-{config.VERSION}.zip"
     info = {"app": config.VERSION, "descarga": config.releases_page(),
+            "programa": {"url": f"https://github.com/{config.GITHUB_USER}/{config.GITHUB_REPO}/releases/download/"
+                                f"{TAG}/{program_zip}",
+                         "tamaño": f"{(REL / program_zip).stat().st_size / 2 ** 20:.0f} MB"
+                         if (REL / program_zip).exists() else "45 MB"},
             "archivos": {rel: sha1(ROOT / rel) for rel in DATA_FILES if (ROOT / rel).exists()},
             "paquetes": packs}
     (REPO / "datos").mkdir(exist_ok=True)
