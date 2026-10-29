@@ -267,14 +267,33 @@ def prepare_program_update(progress):
         "Start-Sleep -Seconds 1\n"
         f"robocopy '{q(src)}' '{q(ROOT)}' /E /R:10 /W:2 /XF {' '.join(KEEP_FILES)} "
         f"/XD {' '.join(KEEP_DIRS)} /NFL /NDL /NJH /NJS /NP | Out-Null\n"
-        f"Start-Process -FilePath '{q(exe)}' -WorkingDirectory '{q(ROOT)}'\n"
+        f"Start-Process -FilePath '{q(exe)}' -ArgumentList '--actualizar' -WorkingDirectory '{q(ROOT)}'\n"
         "Start-Sleep -Seconds 3\n"
         f"Remove-Item -Recurse -Force '{q(INSTALL_DIR)}'\n"
         f"Remove-Item -Recurse -Force -LiteralPath '\\\\?\\{q(new.resolve())}'\n"
         "Remove-Item -Force $PSCommandPath\n",
         encoding="utf-8-sig")
     progress(f"Versión {version} lista para instalar.")
+    import paths
+    paths.save_setting("instalacion_intentada", version)  # ver install_blocked()
     return script
+
+
+def install_blocked(version):
+    """¿Ya se intentó instalar sola esta versión y el programa sigue siendo el viejo? Entonces la instalación
+    automática no funciona en esta PC (antivirus, permisos): no se reintenta en un ciclo sin fin."""
+    import paths
+    tried = paths.load_settings().get("instalacion_intentada")
+    return tried == version and _version_tuple(version) > _version_tuple(config.VERSION)
+
+
+def program_update(info):
+    """Versión nueva del programa que se puede instalar sola (solo el .exe empaquetado), o None."""
+    import paths
+    version = new_version(info)
+    if paths.FROZEN and version and (info or {}).get("programa") and not install_blocked(version):
+        return version
+    return None
 
 
 def run_program_update(script):
@@ -433,3 +452,44 @@ def local_count():
 
 if __name__ == "__main__":
     print(run())
+
+
+def pending():
+    """Qué falta o qué hay de nuevo, para la pantalla de inicio: (lista de motivos, hay_internet).
+    Sin motivos = está todo al día. Sin internet solo se ven los faltantes locales (base, imágenes, voces)."""
+    reasons, online = [], False
+    info = remote_info()
+    if info is not None:
+        online = True
+        version = program_update(info)
+        if version:
+            reasons.append(f"Versión nueva del programa: {version}")
+        state = _state()
+        if any(state.get(p) != d or not (ROOT / p).exists() for p, d in (info.get("archivos") or {}).items()):
+            reasons.append("Traducciones y correcciones nuevas")
+        missing = sum(1 for pack in info.get("paquetes") or [] for f in pack.get("archivos", [])
+                      if not (ROOT / pack["carpeta"] / f).exists())
+        if missing:
+            reasons.append(f"Imágenes de cartas e ilustraciones: faltan {missing}")
+    official = official_count()
+    if official is not None:
+        online = True
+        local = local_count()
+        if official > local:
+            reasons.append(f"Cartas nuevas: {official - local}" if local else "La base de cartas")
+    if not DB.exists() and "La base de cartas" not in reasons:
+        reasons.append("La base de cartas")
+    if not any((ROOT / "images" / d).glob("*.png") for d in ("eng", "es419")) and not any("Imágenes" in r for r in reasons):
+        reasons.append("Imágenes de las cartas")
+    try:
+        import voices
+        if game_data() is not None and not voices.INDEX_JSON.exists():
+            reasons.append("Voces del juego (se preparan desde Shadowverse instalado en Steam)")
+    except Exception:
+        pass
+    return reasons, online
+
+
+def usable_offline():
+    """¿Se puede usar el programa sin internet? (ya tiene la base de cartas y las imágenes)."""
+    return DB.exists() and any((ROOT / "images" / d).glob("*.png") for d in ("eng", "es419"))

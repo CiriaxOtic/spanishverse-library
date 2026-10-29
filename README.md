@@ -27,12 +27,14 @@ traducidas, las voces de cada carta, las ilustraciones sin marco y un armador de
 1. Entrá en **[Releases](../../releases/latest)** y bajá `SpanishverseLibrary-<versión>.zip`.
 2. Descomprimilo en cualquier carpeta (por ejemplo, Documentos). No hace falta instalar nada más.
 3. Abrí **`Spanishverse Library.exe`**.
-4. La primera vez, el programa ofrece un acceso directo en el escritorio y empieza a bajar solo las imágenes de las
-   cartas y las ilustraciones (unos 3 GB) y, si tenés el juego en Steam, prepara las voces. Puede tardar un rato; el
-   programa se puede usar mientras, y si se corta internet sigue después desde donde quedó.
+4. La primera vez, la pantalla de inicio te pide **Descargar todo**: las imágenes de las cartas y las ilustraciones
+   (unos 3 GB) y, si tenés el juego en Steam, las voces. Se hace una sola vez; si se corta internet, sigue después desde
+   donde quedó. Al terminar ofrece accesos directos en el escritorio y en el menú Inicio.
+5. Después de esa primera vez, el programa **funciona sin internet**. Actualizar es opcional.
 
-**Actualizaciones:** cuando sale una expansión o una versión nueva del programa, el programa avisa y se actualiza
-solo, conservando tus mazos, voces, imágenes y ajustes. No hace falta volver a bajar nada a mano.
+**Actualizaciones:** el botón **⟳ Actualizar** actualiza todo: las cartas nuevas y también el propio programa (cada
+arreglo o mejora publicada acá se instala sola), conservando tus mazos, voces, imágenes y ajustes. No hace falta
+volver a bajar nada a mano.
 
 **Requisitos:** Windows 10 u 11 e internet para actualizar. Para las voces, tener Shadowverse: Worlds Beyond
 instalado en Steam (sin el juego, todo lo demás funciona igual).

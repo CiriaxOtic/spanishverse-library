@@ -58,9 +58,24 @@ def desktop_dir():
     return Path.home() / "Desktop"
 
 
-def create_shortcut(target, name="Spanishverse Library", icon=None):
-    """Acceso directo en el escritorio. Devuelve la ruta o None si no se pudo."""
-    lnk = desktop_dir() / f"{name}.lnk"
+def start_menu_dir():
+    """Carpeta de programas del menú Inicio del usuario."""
+    return Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / "Microsoft" / "Windows" / \
+        "Start Menu" / "Programs"
+
+
+def shortcut_path(where, name="Spanishverse Library"):
+    return (desktop_dir() if where == "desktop" else start_menu_dir()) / f"{name}.lnk"
+
+
+def shortcut_exists(where):
+    return shortcut_path(where).exists()
+
+
+def create_shortcut(target, name="Spanishverse Library", icon=None, where="desktop"):
+    """Acceso directo en el escritorio ("desktop") o en el menú Inicio ("start"). Devuelve la ruta o None."""
+    lnk = shortcut_path(where, name)
+    lnk.parent.mkdir(parents=True, exist_ok=True)
     q = lambda s: str(s).replace("'", "''")
     script = (f"$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{q(lnk)}');"
               f"$s.TargetPath='{q(target)}';$s.WorkingDirectory='{q(Path(target).parent)}';"

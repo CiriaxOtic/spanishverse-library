@@ -850,13 +850,24 @@ class UpdateWindow(tk.Toplevel):
         # (tkinter no se puede tocar desde otro hilo).
         self.messages = queue.Queue()
         threading.Thread(target=self._work, daemon=True).start()
-        self.after(100, self._poll)
+        self._poll_id = self.after(100, self._poll)
+
+    def destroy(self):
+        """Al cerrar, se cancela la lectura periódica de mensajes (si no, Tcl avisa de un comando inexistente)."""
+        try:
+            self.after_cancel(self._poll_id)
+        except (AttributeError, tk.TclError, ValueError):
+            pass
+        super().destroy()
 
     def write(self, text):
         self.messages.put(("texto", text))
 
     def _poll(self):
-        if not self.winfo_exists():
+        try:
+            if not self.winfo_exists():
+                return
+        except tk.TclError:  # la ventana (o el programa) ya se cerró
             return
         lines = []
         while not self.messages.empty():
@@ -872,7 +883,7 @@ class UpdateWindow(tk.Toplevel):
             lines.append(value)
         if lines:
             self._append("\n".join(lines))
-        self.after(100, self._poll)
+        self._poll_id = self.after(100, self._poll)
 
     def _append(self, text):
         self.log.configure(state="normal")
@@ -885,6 +896,18 @@ class UpdateWindow(tk.Toplevel):
             return self._work_program()
         try:
             import updater
+            info = updater.remote_info()
+            version = updater.program_update(info)
+            if version:  # versión nueva del programa: se instala primero y el programa nuevo sigue con el resto
+                self.write(f"Hay una versión nueva del programa ({version}): se instala primero y después sigue la "
+                           "actualización de las cartas.")
+                script = updater.prepare_program_update(self.write)
+                if script:
+                    self.messages.put(("instalar", script))
+                    return
+            elif updater.new_version(info) and updater.install_blocked(updater.new_version(info)):
+                self.write(f"La versión {updater.new_version(info)} no se pudo instalar sola en esta PC (puede ser el "
+                           "antivirus). Bajala a mano desde la página de GitHub; mientras tanto sigue la actualización.")
             result = updater.run(progress=self.write)
         except Exception as e:  # no debería pasar: cada paso maneja sus errores
             self.write(f"Error inesperado: {e}")
@@ -908,7 +931,8 @@ class UpdateWindow(tk.Toplevel):
             self.close_btn.configure(state="normal")
             return
         import updater
-        self._append("\nCerrando para instalar...")
+        self._append("\nEl programa se cierra, instala la versión nueva y se vuelve a abrir solo para terminar de "
+                     "actualizar. Tus mazos, voces, imágenes y ajustes se conservan.")
         self.update()
         updater.run_program_update(script)
         self.after(300, self.master.destroy)
@@ -923,7 +947,7 @@ class UpdateWindow(tk.Toplevel):
         self.bar.configure(mode="indeterminate")
         self.bar.start(12)
         threading.Thread(target=self._work_program, daemon=True).start()
-        self.after(100, self._poll)
+        self._poll_id = self.after(100, self._poll)
 
     def _done(self, result):
         self.running = False
@@ -1916,7 +1940,6 @@ class App(tk.Tk):
         self._glossary_panel()
         self.refresh()
         self.update_win = None
-        threading.Thread(target=self._check_news, daemon=True).start()
 
     # ---------- aspecto ----------
     def _style(self):
@@ -3118,37 +3141,6 @@ class App(tk.Tk):
             return
         self.update_win = UpdateWindow(self, first_time)
 
-    def _check_news(self):
-        """Al abrir: si el sitio oficial tiene más cartas que la base, o hay una versión nueva en GitHub, avisa."""
-        try:
-            import updater
-            official, local = updater.official_count(), updater.local_count()
-            new_version = updater.new_version(updater.remote_info())
-        except Exception:
-            return
-        if official and official > local:
-            msg = (f"Salieron cartas nuevas: el sitio oficial tiene {official - local} que todavía no están en el "
-                   "programa.\n\n¿Actualizar ahora? (se bajan con sus imágenes, traducciones y voces)")
-            self.after(0, lambda: messagebox.askyesno("Cartas nuevas", msg, parent=self) and self.open_update())
-        elif new_version:
-            import config
-            import paths
-            if paths.FROZEN:  # el .exe se instala solo la versión nueva
-                msg = (f"Hay una versión nueva del programa ({new_version}).\n\n¿Instalarla ahora? Se baja sola, el "
-                       "programa se cierra y se vuelve a abrir. Tus mazos, voces, imágenes y ajustes se conservan.")
-                self.after(0, lambda: messagebox.askyesno("Versión nueva", msg, parent=self)
-                           and self.open_program_update())
-            else:
-                msg = f"Hay una versión nueva del programa ({new_version}).\n\n¿Abrir la página de descarga?"
-                self.after(0, lambda: messagebox.askyesno("Versión nueva", msg, parent=self)
-                           and webbrowser.open(config.releases_page()))
-
-    def open_program_update(self):
-        if self.update_win is not None and self.update_win.winfo_exists():
-            self.update_win.lift()
-            return
-        self.update_win = UpdateWindow(self, program_only=True)
-
     def open_deck_builder(self):
         """El armador de mazos ocupa el lugar de los filtros y la lista de cartas (el botón lo abre y lo cierra)."""
         if self._deck_shown():
@@ -3467,20 +3459,265 @@ def main():
         pass
     if not install_checks():
         return
-    if not DB.exists():  # sin base de cartas: se arma bajando todo, y después se abre el programa
-        root = tk.Tk()
-        root.withdraw()
-        if ICON.exists():
-            root.iconbitmap(default=str(ICON))
-        UpdateWindow(root, first_time=True, on_close=root.destroy)
-        root.mainloop()
+    # Pantalla de inicio: el programa se abre solo si está todo al día (o si el usuario elige usarlo sin conexión).
+    start = StartScreen(auto_update="--actualizar" in sys.argv)
+    start.mainloop()
+    if start.result != "abrir" or not DB.exists():
         return
-    app = App(Data(DB))
-    if "--actualizar" in sys.argv:  # abre directamente la ventana de actualización
-        app.after(500, app.open_update)
-    elif first_run():
-        app.after(800, lambda: welcome(app))
-    app.mainloop()
+    App(Data(DB)).mainloop()
+
+
+class StartScreen(tk.Tk):
+    """Pantalla de inicio: logo y nombre del programa. Al abrir busca actualizaciones; si está todo al día entra
+    directo al programa, y si falta algo o hay novedades, el programa no se usa hasta actualizar (botones
+    «Actualizar» y «Salir»). Al terminar de bajar todo, ofrece los accesos directos y pide volver a abrirlo.
+    Usa fuentes comunes (no las de F()): esta ventana se cierra antes de que se abra el programa."""
+
+    BTN = dict(relief="flat", bd=0, cursor="hand2", padx=22, pady=8, font=("Segoe UI Semibold", 11))
+
+    def __init__(self, auto_update=False):
+        super().__init__()
+        import config
+        self.result = None  # "abrir" = entrar al programa
+        self.auto_update = auto_update
+        self.title("Spanishverse Library")
+        if ICON.exists():
+            self.iconbitmap(default=str(ICON))
+        self.configure(bg=BG)
+        w, h = 780, 600
+        self.geometry(f"{w}x{h}+{(self.winfo_screenwidth() - w) // 2}+{(self.winfo_screenheight() - h) // 3}")
+        self.minsize(640, 520)
+        self.protocol("WM_DELETE_WINDOW", self.quit_program)
+        self.messages = queue.Queue()
+        self.running = False
+        box = tk.Frame(self, bg=BG)
+        box.pack(fill="both", expand=True, padx=36, pady=24)
+        logo = ROOT / "tools" / "icon_png" / "128.png"
+        if logo.exists():
+            self.logo = tk.PhotoImage(file=str(logo))
+            tk.Label(box, image=self.logo, bg=BG).pack(pady=(0, 6))
+        tk.Label(box, text="Spanishverse Library", bg=BG, fg=INK, font=("Segoe UI Semibold", 26)).pack()
+        tk.Label(box, text="Biblioteca de cartas de Shadowverse: Worlds Beyond en español", bg=BG, fg=MUTED,
+                 font=("Segoe UI", 11)).pack()
+        tk.Label(box, text=f"De fans y para fans · libre y gratuito · versión {config.VERSION}", bg=BG, fg=ACCENT,
+                 font=("Segoe UI Semibold", 10)).pack(pady=(2, 14))
+        self.status = tk.Label(box, text="Buscando actualizaciones…", bg=BG, fg=INK, font=("Segoe UI Semibold", 12),
+                               wraplength=680, justify="center")
+        self.status.pack()
+        self.detail = tk.Label(box, text="", bg=BG, fg=MUTED, font=("Segoe UI", 10), wraplength=680, justify="center")
+        self.detail.pack(pady=(4, 10))
+        self.buttons = tk.Frame(box, bg=BG)
+        self.buttons.pack(side="bottom", pady=(10, 0))
+        self.work = tk.Frame(box, bg=BG)  # progreso de la actualización (aparece al apretar «Actualizar»)
+        self.bar = ttk.Progressbar(self.work, mode="indeterminate")
+        self.log = tk.Text(self.work, bg=FIELD, fg=INK, relief="flat", font=("Consolas", 9), wrap="word", height=10,
+                           state="disabled", padx=8, pady=6)
+        threading.Thread(target=self._check, daemon=True).start()
+        self._poll_id = self.after(100, self._poll)
+
+    # ---------- botones ----------
+    def destroy(self):
+        """Al cerrar, se cancela la lectura periódica de mensajes (si no, Tcl avisa de un comando inexistente)."""
+        try:
+            self.after_cancel(self._poll_id)
+        except (AttributeError, tk.TclError, ValueError):
+            pass
+        super().destroy()
+
+    def _button(self, text, command, primary=False):
+        b = tk.Button(self.buttons, text=text, command=command, bg=ACCENT if primary else PANEL,
+                      fg="#ffffff" if primary else INK, activebackground="#8a6fe0" if primary else LINE,
+                      activeforeground="#ffffff" if primary else INK, **self.BTN)
+        b.pack(side="left", padx=6)
+        return b
+
+    def _clear_buttons(self):
+        for b in self.buttons.winfo_children():
+            b.destroy()
+
+    # ---------- revisar ----------
+    def _check(self):
+        try:
+            import updater
+            reasons, online = updater.pending()
+            usable = updater.usable_offline()
+        except Exception as e:
+            reasons, online, usable = [f"No se pudo revisar ({e})"], False, False
+        self.messages.put(("revisado", (reasons, online, usable)))
+
+    def _checked(self, reasons, online, usable):
+        """La primera descarga completa es obligatoria; después, actualizar es opcional y el programa funciona sin
+        internet con lo que ya tiene."""
+        first_done = load_settings().get("descarga_inicial_completa")
+        if online and not reasons:
+            if not first_done:
+                save_settings(descarga_inicial_completa=True)  # ya tenía todo (por ejemplo, de una versión anterior)
+            return self.open_program()
+        self.first_time = not first_done
+        self._clear_buttons()
+        if self.first_time and not online:
+            self.status.config(text="Hace falta internet para la primera descarga.")
+            self.detail.config(text="La primera vez el programa baja las cartas, las imágenes y las voces. Conectate a "
+                                    "internet y apretá «Reintentar». Después ya funciona sin internet.")
+            self._button("Reintentar", self.retry, primary=True)
+            self._button("Salir", self.quit_program)
+            return
+        if not online:  # sin internet: se usa con lo que ya tiene
+            return self.open_program()
+        if self.first_time:
+            self.status.config(text="Primera vez: hay que descargar todo antes de usar el programa.")
+            self.detail.config(text="Se baja:\n• " + "\n• ".join(reasons) +
+                                    "\n\nPuede tardar un buen rato; se hace una sola vez.")
+            self._button("Descargar todo", self.start_update, primary=True)
+            self._button("Salir", self.quit_program)
+        else:
+            self.status.config(text="Hay novedades para actualizar.")
+            self.detail.config(text="Novedades:\n• " + "\n• ".join(reasons) +
+                                    "\n\nPodés actualizar ahora o más tarde con «⟳ Actualizar» dentro del programa.")
+            self._button("Actualizar", self.start_update, primary=True)
+            self._button("Ahora no", self.open_program)
+        if self.auto_update:  # se volvió a abrir solo después de instalar una versión nueva: sigue
+            self.start_update()
+
+    def retry(self):
+        self._clear_buttons()
+        self.status.config(text="Buscando actualizaciones…")
+        self.detail.config(text="")
+        threading.Thread(target=self._check, daemon=True).start()
+
+    # ---------- actualizar ----------
+    def start_update(self):
+        self._clear_buttons()
+        self.running = True
+        self.status.config(text="Actualizando… no cierres esta ventana.")
+        self.detail.config(text="La primera vez tarda bastante (imágenes y voces). Si se corta internet, la próxima "
+                                "vez sigue desde donde quedó.")
+        self.work.pack(fill="both", expand=True)
+        self.bar.pack(fill="x", pady=(0, 6))
+        self.log.pack(fill="both", expand=True)
+        self.bar.start(12)
+        self._button("Salir", self.quit_program)
+        threading.Thread(target=self._update, daemon=True).start()
+
+    def write(self, text):
+        self.messages.put(("texto", text))
+
+    def _update(self):
+        try:
+            import updater
+            info = updater.remote_info()
+            version = updater.program_update(info)
+            if version:
+                self.write(f"Versión nueva del programa ({version}): se instala primero; el programa se cierra, se "
+                           "vuelve a abrir solo y sigue con el resto.")
+                script = updater.prepare_program_update(self.write)
+                if script:
+                    self.messages.put(("instalar", script))
+                    return
+            result = updater.run(progress=self.write)
+            reasons, online = updater.pending()
+        except Exception as e:
+            self.write(f"Error inesperado: {e}")
+            result, reasons, online = {}, ["la actualización no terminó"], True
+        self.messages.put(("fin", (result, reasons)))
+
+    def _poll(self):
+        try:
+            if not self.winfo_exists():
+                return
+        except tk.TclError:  # la ventana (o el programa) ya se cerró
+            return
+        lines = []
+        while not self.messages.empty():
+            kind, value = self.messages.get()
+            if kind == "texto":
+                lines.append(value)
+                continue
+            if lines:
+                self._append("\n".join(lines))
+                lines = []
+            if kind == "revisado":
+                self._checked(*value)
+            elif kind == "instalar":
+                import updater
+                self._append("\nInstalando la versión nueva: el programa se vuelve a abrir solo.")
+                self.update()
+                updater.run_program_update(value)
+                self.after(300, self.destroy)
+                return
+            elif kind == "fin":
+                self._finished(*value)
+        if lines:
+            self._append("\n".join(lines))
+        self._poll_id = self.after(100, self._poll)
+
+    def _append(self, text):
+        self.log.configure(state="normal")
+        self.log.insert("end", text + "\n")
+        self.log.see("end")
+        self.log.configure(state="disabled")
+
+    # ---------- listo ----------
+    def _finished(self, result, reasons):
+        import setup_checks
+        self.running = False
+        self.bar.stop()
+        self.bar.configure(mode="determinate", value=100)
+        self._clear_buttons()
+        if reasons:
+            self.status.config(text="La actualización terminó, pero quedó algo pendiente.")
+            self.detail.config(text="Pendiente:\n• " + "\n• ".join(reasons) +
+                               "\n\nRevisá el detalle de abajo y volvé a intentar.")
+            self._button("Reintentar", self.start_update, primary=True)
+            if load_settings().get("descarga_inicial_completa"):  # solo la primera descarga es obligatoria
+                self._button("Abrir el programa", self.open_program)
+            self._button("Salir", self.quit_program)
+            return
+        first = not load_settings().get("descarga_inicial_completa")
+        save_settings(descarga_inicial_completa=True)
+        if not first:  # actualización de siempre: se entra directo
+            self.status.config(text="¡Listo! El programa está al día.")
+            self.detail.config(text="")
+            self._button("Abrir el programa", self.open_program, primary=True)
+            return
+        self.status.config(text="¡Listo! Ya está todo descargado.")
+        self.detail.config(text="Cerrá el programa y volvé a abrirlo para empezar a usarlo. De ahora en más funciona "
+                                "sin internet; las actualizaciones son opcionales.")
+        self.log.pack_forget()
+        opts = tk.Frame(self.work, bg=BG)
+        opts.pack(fill="x", pady=(10, 0))
+        exe = setup_checks.program_path()
+        self.want_desktop = tk.BooleanVar(value=not setup_checks.shortcut_exists("desktop"))
+        self.want_start = tk.BooleanVar(value=not setup_checks.shortcut_exists("start"))
+        for text, var in (("Crear un acceso directo en el escritorio", self.want_desktop),
+                          ("Agregar el programa al menú Inicio de Windows", self.want_start)):
+            tk.Checkbutton(opts, text=text, variable=var, bg=BG, fg=INK, selectcolor=FIELD, activebackground=BG,
+                           activeforeground=INK, font=("Segoe UI", 11), anchor="w").pack(fill="x", pady=2)
+        tk.Label(opts, text="Para tenerlo en la barra de tareas: abrí el programa, hacé clic derecho en su ícono de la "
+                            "barra de tareas (abajo) y elegí «Anclar a la barra de tareas».",
+                 bg=BG, fg=MUTED, font=("Segoe UI", 10), wraplength=680, justify="left").pack(fill="x", pady=(8, 0))
+        self._button("Cerrar", lambda: self._close_done(exe), primary=True)
+
+    def _close_done(self, exe):
+        import setup_checks
+        if self.want_desktop.get():
+            setup_checks.create_shortcut(exe, icon=exe, where="desktop")
+        if self.want_start.get():
+            setup_checks.create_shortcut(exe, icon=exe, where="start")
+        self.destroy()
+
+    # ---------- salir / entrar ----------
+    def open_program(self):
+        self.result = "abrir"
+        self.destroy()
+
+    def quit_program(self):
+        if self.running and not messagebox.askyesno(
+                "Salir", "La actualización sigue trabajando. Si salís, queda a medias y la próxima vez sigue desde "
+                "donde quedó. ¿Salir igual?", parent=self):
+            return
+        self.result = None
+        self.destroy()
 
 
 def install_checks():
@@ -3512,26 +3749,6 @@ def install_checks():
     finally:
         root.destroy()
     return True
-
-
-def first_run():
-    """Todavía no se bajaron las imágenes de las cartas: es la primera vez."""
-    return not any((IMAGES / d).glob("*.png") for d in ("eng", "es419"))
-
-
-def welcome(app):
-    """Primera vez: ofrece el acceso directo del escritorio (una sola vez) y empieza a bajar todo."""
-    import setup_checks
-    import paths
-    if paths.FROZEN and not load_settings().get("acceso_directo_preguntado"):
-        save_settings(acceso_directo_preguntado=True)
-        if messagebox.askyesno("Bienvenido a Spanishverse Library",
-                               "¿Querés un acceso directo en el escritorio para abrir el programa?", parent=app):
-            exe = setup_checks.program_path()
-            if setup_checks.create_shortcut(exe, icon=exe) is None:
-                messagebox.showinfo("Acceso directo", "No se pudo crear. Podés hacerlo a mano: clic derecho en "
-                                    "«Spanishverse Library.exe» → «Enviar a» → «Escritorio».", parent=app)
-    app.open_update(first_time=True)
 
 
 if __name__ == "__main__":
