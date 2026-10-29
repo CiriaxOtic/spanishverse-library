@@ -1,6 +1,12 @@
 """Novedades de cada versión, para la ventana «Novedades de la versión» (se muestra sola la primera vez que se abre
 una versión nueva). La más nueva va primero."""
 NOVEDADES = [
+    ("1.1.4", [
+        "Filtro «Palabra clave» con todo el glosario: además de las palabras clave, términos como Desterrar, "
+        "Destruir, Robar, Descartar, Invocar o Transformar traen las cartas cuyo efecto los usa.",
+        "Armador de mazos: los filtros de la lista principal (costo, tipo, rareza, expansión, tribu, palabra clave, "
+        "ataque y defensa…) siguen a la vista y achican también las cartas que se pueden agregar.",
+    ]),
     ("1.1.3", [
         "El programa abre siempre en tema oscuro. El tema claro («Ayuda → Tema claro») dura hasta cerrarlo.",
         "Más palabras clave resaltadas, con su significado al pasar el mouse: los títulos Acelerar, Cristalizar, "

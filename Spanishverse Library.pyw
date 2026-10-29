@@ -217,10 +217,10 @@ class Data:
         self.ability_re = {lang: re.compile(r"(?<![\w-])(" + "|".join(
             re.escape(w) for w in sorted(terms, key=len, reverse=True)) + r")(?![\w-])")
             for lang, terms in self.ability_terms.items()}
-        self.keyword_options = sorted(
-            ((self.kw_es[en.lower()], en.lower()) for en, es in self.lookup["keywords"].values()
-             if en and en.lower() in used and en.lower() in self.kw_es),
-            key=lambda kv: kv[0].lower())
+        options = {self.kw_es[en.lower()]: en.lower() for en, es in self.lookup["keywords"].values()
+                   if en and en.lower() in used and en.lower() in self.kw_es}
+        self._glossary_filter(options)
+        self.keyword_options = sorted(options.items(), key=lambda kv: kv[0].lower())
 
         # Para "Ver creadoras" / "Ver lo que trae": qué cartas crea cada una de verdad (no toda la lista de
         # relacionadas de la página, que es encadenada) y qué efectos traen cartas al azar o del cementerio.
@@ -302,6 +302,48 @@ class Data:
                 if tid not in sure and tid not in possible and random_creators.fits(target, pool, card["class_id"]):
                     possible[tid] = pool.get("src", "mazo")
         return sure, possible
+
+    # Filtro «Palabra clave» con todo el glosario: los términos que el juego no resalta (Desterrar, Destruir,
+    # Robar...) se buscan en el texto en inglés del efecto. Lo que no está acá se busca por su nombre
+    # (y sus formas: banish, banishes, banished).
+    GLOSS_PATTERNS = {
+        "attack (stat)": r"\battack\b|\+\d+/\+\d+|\d+/\d+", "attack (action)": r"\battack(s|ed|ing)?\b",
+        "play point": r"\bplay points?\b|\bpp\b", "bonus play point": r"\b(bonus|extra) play points?\b",
+        "ep (evolution point)": r"\bep\b|\bevolution points?\b|\bevolve points?\b",
+        "sep (super-evolution point)": r"\bsep\b|\bsuper-evolution points?\b",
+        "play": r"\bplay(s|ed|ing)?\b", "redraw": r"\bredraw|\bmulligan",
+        "evolution": r"\bevol(ve|ves|ved|ving|ution)\b", "super-evolution": r"\bsuper-evol(ve|ves|ved|ving|ution)\b",
+        "evolve": r"(?<!super-)\bevol(ve|ves|ved|ving)\b", "super-evolve": r"\bsuper-evol(ve|ves|ved|ving)\b",
+        "give +x/+y": r"\+(\d+|x)/\+(\d+|x)", "draw": r"\bdraw(s|n)?\b", "damage": r"\bdamage\b",
+        "add to hand": r"\b(put|puts|add|adds)\b[^.]{0,80}\b(into|to) (your|their|its owner's|the) hand\b",
+        "return to hand": r"\breturn(s|ed)?\b[^.]{0,80}\bto (your|their|its owner's|the) hand\b",
+        "return to deck": r"\b(into|to) (your|their|its owner's) deck\b|\bshuffle",
+        "leave the field": r"\b(leave|leaves|left) (the field|play)\b", "split damage": r"\bsplit\b",
+        "exact copy": r"\bexact cop(y|ies)\b", "summon": r"\bsummon(s|ed|ing)?\b",
+        "restore": r"\brestore(s|d)?\b", "select": r"\bselect(s|ed|ing)?\b", "spellboost": r"\bspellboost",
+        "leader area": r"\bleader area\b", "trait": r"\btraits?\b", "token": r"\btokens?\b",
+    }
+
+    def _glossary_filter(self, options):
+        """Suma al filtro «Palabra clave» (options: etiqueta en español -> clave) cada término del glosario que
+        aparece en el efecto de alguna carta. Si el término ya está con el mismo nombre en español («Evolución»),
+        se suma a esa opción en vez de repetirla."""
+        def plain(c):
+            texts = [c["skill_en"]] + [e.get("en") for e in c["specific"]]
+            # sin los textos resaltados: son palabras clave (ya contadas) o nombres de cartas («Storm Dragon»)
+            return " ".join(re.sub(r"<[^>]+>", "", re.sub(r"<color=Keyword>.*?</color>", " ", t or "")) for t in texts)
+        texts = {cid: plain(c) for cid, c in self.cards.items()}
+        for e in self.glossary:
+            en = e["title_en"].lower()
+            label = e["title_es"] or e["title_en"]
+            key = options.get(label, en)
+            pattern = self.GLOSS_PATTERNS.get(en) or r"\b" + re.escape(en) + r"(s|es|ed|d)?\b"
+            found = re.compile(pattern, re.I)
+            hits = [cid for cid, text in texts.items() if found.search(text)]
+            for cid in hits:
+                self.cards[cid]["kw"].add(key)
+            if hits or key in self.kw_used:
+                options[label] = key
 
     EFFECT_KEYWORDS = {"crest": "crest", "crystal": "crystallize", "accelerate": "accelerate", "faith": "faith"}
 
@@ -2082,8 +2124,8 @@ class DeckBuilder(tk.Frame):
     BAD = BAD
 
     def __init__(self, app):
-        # Va en la ventana principal, en el lugar de la lista de cartas (App.open_deck_builder lo intercambia).
-        super().__init__(app.pane, bg=PANEL)
+        # Va en la ventana principal, debajo de los filtros, en el lugar de la lista (App.open_deck_builder).
+        super().__init__(app.left, bg=PANEL)
         self.app, self.data = app, app.data
         self.counts = {}
         self.class_id = None
@@ -2310,7 +2352,7 @@ class DeckBuilder(tk.Frame):
         shown = {}
         for c in self.data.cards.values():
             if (not c["is_token"] and c["class_id"] in (self.class_id, 0) and (c["in_rotation"] or not rotation)
-                    and all(w in c["haystack"] for w in words)):
+                    and all(w in c["haystack"] for w in words) and self.app.matches(c, deck=True)):
                 # Reimpresiones (ej. Stormy Blast en Chronicle of Destiny): una sola fila, la original si se puede.
                 base = c["base_card_id"] or c["card_id"]
                 if base not in shown or c["card_id"] == base:
@@ -3483,7 +3525,8 @@ class App(tk.Tk):
         if not getattr(self, "filter_groups", None):
             return
         # El interruptor de formato también figura en la fila de activos cuando está en Rotación.
-        actives = [("Rotación", lambda: self.format_var.set("Ilimitado"))] if self.format_var.get() == "Rotación" else []
+        actives = [("Rotación", lambda: self.format_var.set("Ilimitado"))] \
+            if self.format_var.get() == "Rotación" and not self._deck_shown() else []
         for title, btn, summary in self.filter_groups:
             items = summary()
             actives += items
@@ -3502,7 +3545,7 @@ class App(tk.Tk):
         for text, clear in actives:
             flow.add(self._active_chip(flow, text, clear))
         if not flow.winfo_manager():
-            flow.pack(fill="x", pady=(0, 8), before=self.list_host)
+            flow.pack(fill="x", pady=(0, 8), before=self._list_area())
         self.after_idle(lambda: flow._layout(max(1, flow.winfo_width())))
 
     def _active_chip(self, flow, text, clear):
@@ -3597,7 +3640,7 @@ class App(tk.Tk):
         self.format_switch = Switch(self.format_col, "Ilimitado", "Rotación", self.refresh)
         self.format_switch.pack(anchor="w")
         self.format_var = self.format_switch.var
-        slider = SizeSlider(self.format_col, self.font_scale_var, self._font_scale_changed,
+        slider = self.size_slider = SizeSlider(self.format_col, self.font_scale_var, self._font_scale_changed,
                             lambda: save_settings(tamaño_letra=self.font_scale_var.get()))
         slider.pack(anchor="w", pady=(10, 0))
         self.size_tip = lambda: self.tooltip.show(f"Tamaño de letra: {round(self.font_scale_var.get() * 100)} %",
@@ -4108,11 +4151,13 @@ class App(tk.Tk):
         except ValueError:
             return None
 
-    def matches(self, c):
+    def matches(self, c, deck=False):
+        """¿La carta pasa los filtros? deck=True: para las cartas del armador de mazos, que tiene su propio
+        formato y su propia búsqueda (y nunca muestra fichas)."""
         # Las fichas no van en mazos, así que el formato no las afecta.
-        if self.format_var.get() == "Rotación" and not c["is_token"] and not c["in_rotation"]:
+        if not deck and self.format_var.get() == "Rotación" and not c["is_token"] and not c["in_rotation"]:
             return False
-        if not self.tokens.get() and c["is_token"]:
+        if not deck and not self.tokens.get() and c["is_token"]:
             return False
         if self.only_es.get() and not c["has_es"]:
             return False
@@ -4147,6 +4192,8 @@ class App(tk.Tk):
                 return False
             if hi is not None and (c[stat] or 0) > hi:
                 return False
+        if deck:
+            return True
         query = self.search.get().strip().lower()
         for prefix, field in (("ilustrador:", "illustrator"), ("voz:", "cv")):
             if query.startswith(prefix):
@@ -4213,6 +4260,8 @@ class App(tk.Tk):
         self.count.config(text=f"{len(cards)} cartas")
         self._sync_mode_buttons()
         self._update_filter_summary()
+        if self._deck_shown():
+            self.deck_view._fill_pool()
 
     def _sync_mode_buttons(self):
         """Los botones del detalle reflejan el modo actual (solo uno puede estar apretado)."""
@@ -4590,37 +4639,48 @@ class App(tk.Tk):
         self.update_win = UpdateWindow(self, first_time)
 
     def open_deck_builder(self):
-        """El armador de mazos ocupa el lugar de los filtros y la lista de cartas (el botón lo abre y lo cierra)."""
+        """El armador de mazos ocupa el lugar de la lista de cartas (el botón lo abre y lo cierra). Los filtros
+        de arriba siguen a la vista y achican también las cartas que se pueden agregar al mazo; el formato y la
+        búsqueda son los del armador."""
         if self._deck_shown():
             return self.close_deck_builder()
         first = self.deck_view is None
         if first:
             self.deck_view = DeckBuilder(self)
         self._close_popup()
-        self._swap_left(self.left, self.deck_view)
+        self.list_host.pack_forget()
+        self.deck_view.pack(fill="both", expand=True)
+        self.format_switch.pack_forget()  # el armador tiene su propio Ilimitado / Rotación
         self.search_box.pack_forget()  # el buscador de arriba es de la lista; el armador tiene el suyo
-        if first:  # lista de cartas del armador más ancha que la del mazo
+        self._update_filter_summary()
+        self.deck_view._fill_pool()
+        if first:  # lista de cartas del armador más ancha que la del mazo (cuando ya tiene su ancho de verdad)
             inner = self.deck_view.inner
-            self.after(50, lambda: inner.sashpos(0, int(inner.winfo_width() * 0.58)))
+
+            def place_sash(_=None):
+                width = inner.winfo_width()
+                if width < 300:
+                    return self.after(30, place_sash)
+                inner.sashpos(0, int(width * 0.58))
+            self.after(30, place_sash)
 
     def _deck_shown(self):
-        return self.deck_view is not None and str(self.deck_view) in [str(p) for p in self.pane.panes()]
+        return self.deck_view is not None and bool(self.deck_view.winfo_manager())
 
     def close_deck_builder(self):
         if not self._deck_shown():
             return
         if self.deck_view.related:  # la lista del armador vuelve a todas las cartas
             self.deck_view.show_related(None)
-        self._swap_left(self.deck_view, self.left)
+        self.deck_view.pack_forget()
+        self.list_host.pack(fill="both", expand=True)
+        self.format_switch.pack(anchor="w", before=self.size_slider)
         self.search_box.pack(side="left")
+        self._update_filter_summary()
 
-    def _swap_left(self, old, new):
-        """Cambia lo que se ve a la izquierda del divisor, sin moverlo."""
-        pos = self.pane.sashpos(0)
-        self.pane.forget(old)
-        self.pane.insert(0, new, weight=3)
-        self.update_idletasks()
-        self.pane.sashpos(0, pos)
+    def _list_area(self):
+        """Lo que va debajo de los filtros: la lista de cartas o el armador de mazos."""
+        return self.deck_view if self._deck_shown() else self.list_host
 
     def go_back(self):
         if self.history:
