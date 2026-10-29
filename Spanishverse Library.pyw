@@ -954,6 +954,10 @@ class UpdateWindow(tk.Toplevel):
         self.bar.stop()
         self.bar.configure(mode="determinate", value=100)
         self.close_btn.configure(state="normal")
+        if hasattr(self.master, "_mark_update_button"):  # el botón «Actualizar» deja de estar marcado
+            self.master.pending = ([f"Versión nueva del programa: {result['version_nueva']}"]
+                                   if result.get("version_nueva") else [])
+            self.master._mark_update_button()
         if result.get("version_nueva"):
             import config
             import paths
@@ -2069,10 +2073,12 @@ class DeckView(tk.Frame):
 
 
 class App(tk.Tk):
-    def __init__(self, data):
+    def __init__(self, data, pending=None):
         super().__init__()
+        import config
         self.data = data
-        self.title("Spanishverse Library")
+        self.pending = pending or []  # novedades que el usuario decidió no actualizar al abrir
+        self.title(f"Spanishverse Library {config.VERSION}")
         if ICON.exists():  # ícono propio en la ventana y en todas las ventanas secundarias
             self.iconbitmap(default=str(ICON))
         self.geometry("1400x860")  # tamaño al salir de pantalla completa
@@ -2363,12 +2369,21 @@ class App(tk.Tk):
         self.entry_menu(entry)
         self.tokens = tk.BooleanVar()
         self.only_es = tk.BooleanVar()
-        ttk.Button(bar, text="⟳ Actualizar", command=self.open_update).pack(side="right", padx=(8, 0))
+        self.update_btn = ttk.Button(bar, text="⟳ Actualizar", command=self.ask_update)
+        self.update_btn.pack(side="right", padx=(8, 0))
+        self.update_btn.bind("<Enter>", lambda e: self.tooltip.show(
+            "Hay novedades para actualizar:\n• " + "\n• ".join(self.pending) if self.pending
+            else "Buscar y bajar cartas nuevas y versiones nuevas del programa",
+            self.update_btn.winfo_rootx(), self.update_btn.winfo_rooty() + self.update_btn.winfo_height() - 12))
+        self.update_btn.bind("<Leave>", lambda e: self.tooltip.hide())
+        self._mark_update_button()
         ttk.Button(bar, text="? Glosario", command=self.toggle_glossary).pack(side="right", padx=(8, 0))
         ttk.Button(bar, text="🃏 Armar mazo", command=self.open_deck_builder).pack(side="right", padx=(8, 0))
         ttk.Button(bar, text="Limpiar filtros", command=self.reset).pack(side="right")
         self.count = ttk.Label(bar, style="Muted.TLabel", text="000 cartas")
         self.count.pack(side="right", padx=(0, 14))
+        import config
+        ttk.Label(bar, style="Muted.TLabel", text=f"versión {config.VERSION}").pack(side="right", padx=(0, 14))
         self.search_box.update_idletasks()
         self.search_box.configure(height=self.search_box.winfo_reqheight(), width=600)
         self.search_box.pack_propagate(False)
@@ -3297,6 +3312,20 @@ class App(tk.Tk):
             return
         VoiceAssistant(self, self.current)
 
+    def _mark_update_button(self):
+        """Con novedades sin actualizar, el botón se ve violeta y con un punto."""
+        self.update_btn.config(text="⟳ Actualizar ●" if self.pending else "⟳ Actualizar",
+                               style="Active.TButton" if self.pending else "TButton")
+
+    def ask_update(self):
+        """«Actualizar»: si al abrir había novedades, primero pregunta (y dice cuáles son)."""
+        if self.pending and not messagebox.askyesno(
+                "Actualizar", "Hay novedades para actualizar:\n\n• " + "\n• ".join(self.pending) +
+                "\n\n¿Actualizar ahora a la versión más reciente? Tus mazos, voces, imágenes y ajustes se conservan.",
+                parent=self):
+            return
+        self.open_update()
+
     def open_update(self, first_time=False):
         if self.update_win is not None and self.update_win.winfo_exists():
             self.update_win.lift()
@@ -3628,7 +3657,7 @@ def main():
     start.mainloop()
     if start.result != "abrir" or not DB.exists():
         return
-    App(Data(DB)).mainloop()
+    App(Data(DB), pending=getattr(start, "pending", [])).mainloop()
 
 
 class StartScreen(tk.Tk):
@@ -3739,7 +3768,7 @@ class StartScreen(tk.Tk):
             self.detail.config(text="Novedades:\n• " + "\n• ".join(reasons) +
                                     "\n\nPodés actualizar ahora o más tarde con «⟳ Actualizar» dentro del programa.")
             self._button("Actualizar", self.start_update, primary=True)
-            self._button("Ahora no", self.open_program)
+            self._button("Iniciar sin actualizar", lambda: self.open_program(reasons))
         if self.auto_update:  # se volvió a abrir solo después de instalar una versión nueva: sigue
             self.start_update()
 
@@ -3871,8 +3900,9 @@ class StartScreen(tk.Tk):
         self.destroy()
 
     # ---------- salir / entrar ----------
-    def open_program(self):
+    def open_program(self, pending=None):
         self.result = "abrir"
+        self.pending = pending or []  # el programa marca el botón «Actualizar» si quedaron novedades
         self.destroy()
 
     def quit_program(self):

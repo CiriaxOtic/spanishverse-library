@@ -69,12 +69,37 @@ def _version_tuple(v):
 
 
 # ---------- GitHub ----------
+_ref = {}
+
+
+def _raw(path):
+    """Dirección de un archivo del repositorio en su último cambio. Se pide el número del último cambio a la API de
+    GitHub y se baja el archivo de ese cambio exacto: la dirección de siempre («main») queda guardada en caché unos
+    minutos después de publicar, y el programa vería la versión anterior."""
+    if "sha" not in _ref:
+        _ref["sha"] = None
+        try:
+            req = urllib.request.Request(
+                f"https://api.github.com/repos/{config.GITHUB_USER}/{config.GITHUB_REPO}/commits/{config.BRANCH}",
+                headers=dict(HEADERS, Accept="application/vnd.github.sha"))
+            with urllib.request.urlopen(req, timeout=15) as r:
+                sha = r.read().decode("ascii", "ignore").strip()
+            if len(sha) == 40 and all(ch in "0123456789abcdef" for ch in sha):
+                _ref["sha"] = sha
+        except Exception:
+            pass  # sin la API (por ejemplo, límite de consultas): la dirección de siempre, pidiendo que no use caché
+    if _ref["sha"]:
+        return f"https://raw.githubusercontent.com/{config.GITHUB_USER}/{config.GITHUB_REPO}/{_ref['sha']}/{path}"
+    return f"{config.raw_url(path)}?t={int(time.time())}"
+
+
 def remote_info():
     """datos/version.json del repositorio, o None si no hay GitHub configurado o no hay internet."""
     if not config.GITHUB_USER:
         return None
+    _ref.clear()  # cada consulta busca el último cambio publicado
     try:
-        return json.loads(_get(config.raw_url("datos/version.json"), timeout=20))
+        return json.loads(_get(_raw("datos/version.json"), timeout=20))
     except Exception:
         return None
 
@@ -94,7 +119,7 @@ def sync_files(info, progress):
         if state.get(path) == digest and (ROOT / path).exists():
             continue
         try:
-            data = _get(config.raw_url(path))
+            data = _get(_raw(path))
         except Exception as e:
             progress(f"  no se pudo bajar {path}: {e}")
             continue
