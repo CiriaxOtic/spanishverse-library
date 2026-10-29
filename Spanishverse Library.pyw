@@ -1736,7 +1736,6 @@ class DeckView(tk.Frame):
         self.card, self.evo, self.history = None, False, []
         self.voice_pos, self.voice_btns = {}, {}
         self.related = None  # (tipo, carta): en el lugar del mazo, las creadoras o lo que crea esa carta
-        self.tiles = []
         self.place(x=0, y=0, relwidth=1, relheight=1)
         self.lift()
         self._header()
@@ -1778,6 +1777,12 @@ class DeckView(tk.Frame):
         curve.bind("<Configure>", lambda _: draw_curve(curve, b.curve_counts(), b.CURVE))
 
     # ---------- las cartas ----------
+    # Las cartas se dibujan directo sobre un lienzo (imágenes, textos y botones − / + pintados), no como piezas
+    # sueltas: así la grilla se acomoda al ancho desde el primer momento y se desplaza fluida, sin franjas ni
+    # cartas que desaparecen, aunque sean muchas.
+    IMG_W, IMG_H = 177, 229  # las imágenes a un tercio (TILE)
+    PAD = 10
+
     def _grid(self, body):
         self.wrap = tk.Frame(body, bg=BG)
         self.wrap.pack(side="left", fill="both", expand=True)
@@ -1787,44 +1792,27 @@ class DeckView(tk.Frame):
         self.related_label = tk.Label(self.related_bar, text="", bg=FIELD, fg=INK, font=F("Segoe UI Semibold", 11),
                                       anchor="w", justify="left")
         self.related_label.pack(side="left", fill="x", expand=True)
-        self.canvas = tk.Canvas(self.wrap, bg=BG, highlightthickness=0)
+        self.related_bar.bind("<Configure>", lambda e: self.related_label.config(wraplength=max(200, e.width - 180)))
+        self.canvas = tk.Canvas(self.wrap, bg=BG, highlightthickness=0, yscrollincrement=24)
         scroll = ttk.Scrollbar(self.wrap, orient="vertical", command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=scroll.set)
         scroll.pack(side="right", fill="y")
         self.canvas.pack(side="left", fill="both", expand=True)
-        self.inner = tk.Frame(self.canvas, bg=BG)
-        self.canvas.create_window(0, 0, window=self.inner, anchor="nw")
-        self.inner.bind("<Configure>", lambda _: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
-        self.canvas.bind("<Configure>", lambda e: self._layout(e.width))
-        for w in (self.canvas, self.inner):
-            w.bind("<MouseWheel>", self._wheel)
+        self.canvas.bind("<Configure>", lambda e: self._redraw_later())
+        self.canvas.bind("<MouseWheel>", self._wheel)
+        self.items = []  # cartas que se muestran: [(carta, nota, motivo_si_no_puede_ir_al_mazo)]
+        self._pending_draw = None
+        self._loading = None  # carga de imágenes en curso (de a poco, para no congelar la ventana)
         self._deck_tiles()
-
-    def _clear_tiles(self):
-        for _, tile in self.tiles:
-            tile.destroy()
-        self.tiles = []
-        self.canvas.yview_moveto(0)
 
     def _deck_tiles(self):
         """Las cartas del mazo, con sus copias."""
         d = self.data
-        self._clear_tiles()
         counts = self.builder.counts
-        for cid in sorted(counts, key=lambda k: (d.cards[k]["cost"], d.cards[k]["name_en"].lower())):
-            tile = tk.Frame(self.inner, bg=BG, highlightthickness=3, highlightbackground=BG, cursor="hand2")
-            tk.Label(tile, text=f"× {counts[cid]}", bg=BG, fg=INK, font=F("Segoe UI Semibold", 13)).pack(anchor="e", padx=8)
-            img = self._tile_image(d.cards[cid])
-            if img:
-                tk.Label(tile, image=img, bg=BG).pack()
-            else:
-                tk.Label(tile, text=d.cards[cid]["name_en"], bg=FIELD, fg=INK, font=F(*FONT), width=22, height=12,
-                         wraplength=160).pack()
-            for w in (tile, *tile.winfo_children()):
-                w.bind("<Button-1>", lambda _, c=cid: self.open_card(c))
-                w.bind("<MouseWheel>", self._wheel)
-            self.tiles.append((cid, tile))
-        self._layout(self.canvas.winfo_width())
+        self.items = [(cid, "", None) for cid in
+                      sorted(counts, key=lambda k: (d.cards[k]["cost"], d.cards[k]["name_en"].lower()))]
+        self.canvas.yview_moveto(0)
+        self._draw()
 
     # ---------- en el lugar del mazo: creadoras o lo que crea una carta ----------
     def show_related(self, kind, card_id=None):
@@ -1843,71 +1831,134 @@ class DeckView(tk.Frame):
         if self.card is not None:
             self._render()  # los botones del detalle quedan apretados o no
 
+    WHY = {"ficha": "Ficha: no va en el mazo", "otra clase": "Otra clase", "fuera de Rotación": "Fuera de Rotación",
+           "elegí una clase": "Elegí la clase del mazo"}
+
     def _related_tiles(self, sure, possible):
         d, b = self.data, self.builder
-        self._clear_tiles()
         where = {"mazo": "de tu mazo", "cementerio": "de tu cementerio"}
         by_cost = lambda i: (d.cards[i]["cost"] or 0, d.cards[i]["class_id"] == 0, d.cards[i]["name_en"].lower())
+        self.items = []
         for cid in sorted(sure, key=by_cost) + sorted(possible, key=by_cost):
-            c = d.cards[cid]
-            tile = tk.Frame(self.inner, bg=BG, highlightthickness=3, highlightbackground=BG, cursor="hand2")
-            img = self._tile_image(c)
-            pic = tk.Label(tile, image=img, bg=BG) if img else tk.Label(
-                tile, text=c["name_en"], bg=FIELD, fg=INK, font=F(*FONT), width=22, height=12, wraplength=160)
-            pic.pack()
-            note = "posible" + (f" · {where[possible[cid]]}" if possible.get(cid) in where else "") \
-                if cid in possible else ""
-            tk.Label(tile, text=note, bg=BG, fg=MUTED, font=F("Segoe UI", 9)).pack()
-            row = tk.Frame(tile, bg=BG)
-            row.pack(pady=(2, 0))
-            why = b.cannot_add(cid)
-            if why:  # no puede ir al mazo: se dice por qué
-                tk.Label(row, text={"ficha": "Ficha: no va en el mazo", "otra clase": "Otra clase",
-                                    "fuera de Rotación": "Fuera de Rotación",
-                                    "elegí una clase": "Elegí la clase del mazo"}[why],
-                         bg=BG, fg=DeckBuilder.BAD, font=F("Segoe UI Semibold", 10)).pack()
-            else:
-                minus = ttk.Button(row, text="−", width=3, command=lambda c=cid: self._change(c, -1))
-                minus.pack(side="left")
-                count = tk.Label(row, text="", bg=BG, fg=INK, font=F("Segoe UI Semibold", 11), width=7)
-                count.pack(side="left")
-                plus = ttk.Button(row, text="+", width=3, command=lambda c=cid: self._change(c, 1))
-                plus.pack(side="left")
-                tile.controls = (minus, count, plus)
-            for w in (tile, pic):
-                w.bind("<Button-1>", lambda _, c=cid: self.open_card(c))
-            for w in (tile, pic, row, *row.winfo_children()):
-                w.bind("<MouseWheel>", self._wheel)
-            self.tiles.append((cid, tile))
-            self._mark_tile(cid, tile)
-        self._layout(self.canvas.winfo_width())
+            note = ("posible" + (f" · {where[possible[cid]]}" if possible.get(cid) in where else "")
+                    if cid in possible else "")
+            self.items.append((cid, note, b.cannot_add(cid)))
+        self.canvas.update_idletasks()
+        self.canvas.yview_moveto(0)
+        self._draw()
 
-    def _mark_tile(self, cid, tile):
-        if not hasattr(tile, "controls"):
-            return
-        minus, count, plus = tile.controls
-        have = self.builder._copies(cid)
-        limit = self.data.cards[cid]["deck_limit"] or 3
-        full_deck = sum(self.builder.counts.values()) >= decks.DECK_SIZE
-        count.config(text=f"{have} / {limit}")
-        minus.config(state="normal" if self.builder.counts.get(cid) else "disabled")
-        plus.config(state="disabled" if have >= limit or full_deck else "normal")
-        tile.config(highlightbackground=ACCENT if have else BG)
+    def _redraw_later(self):
+        """Al cambiar el tamaño, se redibuja una sola vez cuando termina de cambiar."""
+        if self._pending_draw:
+            self.after_cancel(self._pending_draw)
+        self._pending_draw = self.after(40, self._draw)
+
+    def _draw(self):
+        """Dibuja la grilla: tantas columnas como entren en el ancho disponible."""
+        self._pending_draw = None
+        c, d, b = self.canvas, self.data, self.builder
+        top = c.yview()[0]
+        c.delete("all")
+        width = max(c.winfo_width(), self.IMG_W + 2 * self.PAD)
+        line = F(*FONT).metrics("linespace")
+        small = F("Segoe UI", 9).metrics("linespace")
+        related = self.related is not None
+        tile_w = self.IMG_W + 2 * self.PAD
+        head_h = 0 if related else line + 6
+        foot_h = (small + line + 22) if related else 6
+        tile_h = head_h + self.IMG_H + foot_h + 2 * self.PAD
+        cols = max(1, (width - 8) // tile_w)
+        left = 4 + ((width - 8) - cols * tile_w) // 2  # la grilla centrada
+        full_deck = sum(b.counts.values()) >= decks.DECK_SIZE
+        to_load = []
+        for i, (cid, note, why) in enumerate(self.items):
+            card = d.cards[cid]
+            x0, y0 = left + (i % cols) * tile_w, 4 + (i // cols) * tile_h
+            have = b._copies(cid)
+            outline = (INK if cid == self.card else ACCENT if have else BG) if related else \
+                (ACCENT if cid == self.card else BG)
+            c.create_rectangle(x0 + 2, y0 + 2, x0 + tile_w - 2, y0 + tile_h - 2, outline=outline, width=3,
+                               tags=("box", f"box{cid}"))
+            y = y0 + self.PAD
+            if not related:
+                c.create_text(x0 + tile_w - self.PAD, y, anchor="ne", text=f"× {b.counts.get(cid, 0)}", fill=INK,
+                              font=F("Segoe UI Semibold", 13))
+                y += head_h
+            tag = f"card{cid}"
+            img = self._tile_image(card, load=False)
+            if img:
+                c.create_image(x0 + self.PAD, y, anchor="nw", image=img, tags=(tag,))
+            else:  # imagen que todavía no se cargó (aparece enseguida) o que no está descargada
+                c.create_rectangle(x0 + self.PAD, y, x0 + self.PAD + self.IMG_W, y + self.IMG_H, fill=FIELD,
+                                   outline=LINE, tags=(tag, f"ph{cid}"))
+                c.create_text(x0 + tile_w / 2, y + self.IMG_H / 2, text=card["name_en"], fill=INK, font=F(*FONT),
+                              width=self.IMG_W - 16, justify="center", tags=(tag, f"ph{cid}"))
+                to_load.append((cid, x0 + self.PAD, y))
+            c.tag_bind(tag, "<Button-1>", lambda _, k=cid: self.open_card(k))
+            c.tag_bind(tag, "<Enter>", lambda _: c.config(cursor="hand2"))
+            c.tag_bind(tag, "<Leave>", lambda _: c.config(cursor=""))
+            if not related:
+                continue
+            y += self.IMG_H + 4
+            c.create_text(x0 + tile_w / 2, y, anchor="n", text=note, fill=MUTED, font=F("Segoe UI", 9))
+            y += small + 6
+            cy = y + (line + 10) / 2
+            if why:  # no puede ir al mazo: se dice por qué
+                c.create_text(x0 + tile_w / 2, cy, text=self.WHY[why], fill=DeckBuilder.BAD,
+                              font=F("Segoe UI Semibold", 10))
+                continue
+            limit = card["deck_limit"] or 3
+            bw, bh = 34, line + 10
+            for sign, bx, enabled, delta in (("−", x0 + self.PAD, bool(b.counts.get(cid)), -1),
+                                             ("+", x0 + tile_w - self.PAD - bw, have < limit and not full_deck, 1)):
+                btag = f"b{delta}_{cid}"
+                c.create_rectangle(bx, cy - bh / 2, bx + bw, cy + bh / 2, fill=FIELD if enabled else BG,
+                                   outline=LINE, tags=(btag,))
+                c.create_text(bx + bw / 2, cy, text=sign, fill=INK if enabled else LINE,
+                              font=F("Segoe UI Semibold", 13), tags=(btag,))
+                if enabled:
+                    c.tag_bind(btag, "<Button-1>", lambda _, k=cid, dl=delta: self._change(k, dl))
+                    c.tag_bind(btag, "<Enter>", lambda _: c.config(cursor="hand2"))
+                    c.tag_bind(btag, "<Leave>", lambda _: c.config(cursor=""))
+            c.create_text(x0 + tile_w / 2, cy, text=f"{have} / {limit}", fill=INK, font=F("Segoe UI Semibold", 11))
+        rows = (len(self.items) + cols - 1) // cols
+        c.configure(scrollregion=(0, 0, width, max(rows * tile_h + 8, c.winfo_height())))
+        c.yview_moveto(top)
+        if self._loading:
+            self.after_cancel(self._loading)
+            self._loading = None
+        if to_load:
+            self._loading = self.after(1, self._load_images, to_load)
+
+    def _load_images(self, todo):
+        """Carga unas pocas imágenes por vez y reemplaza su recuadro: la grilla se ve al instante."""
+        self._loading = None
+        c = self.canvas
+        for cid, x, y in todo[:6]:
+            img = self._tile_image(self.data.cards[cid])
+            if img and c.find_withtag(f"ph{cid}"):
+                c.delete(f"ph{cid}")
+                tag = f"card{cid}"
+                c.create_image(x, y, anchor="nw", image=img, tags=(tag,))
+        if todo[6:]:
+            self._loading = self.after(1, self._load_images, todo[6:])
 
     def _change(self, cid, delta):
         """− / + en la lista de creadoras / lo que crea: saca o agrega una copia al mazo."""
         self.builder.change(cid, delta)
-        for c, tile in self.tiles:
-            self._mark_tile(c, tile)
+        self._draw()
         self.head.destroy()
         self._header()
 
-    def _tile_image(self, card):
+    def _tile_image(self, card, load=True):
+        """Imagen chica de la carta. Con load=False solo la devuelve si ya está cargada."""
         for lang, folder in (("es", "es419"), ("en", "eng")):
             h = card[f"img_{lang}"]
             path = IMAGES / folder / f"{h}.png" if h else None
             if path is not None and path.exists():
                 key = (path, self.TILE)
+                if key not in self.app.images and not load:
+                    return None
                 if key not in self.app.images:
                     try:
                         self.app.images[key] = tk.PhotoImage(file=str(path)).subsample(self.TILE)
@@ -1916,18 +1967,10 @@ class DeckView(tk.Frame):
                 return self.app.images[key]
         return None
 
-    def _layout(self, width):
-        """Tantas columnas como entren en el ancho disponible."""
-        if not self.tiles:
-            return
-        tile_w = self.tiles[0][1].winfo_reqwidth() + 12
-        cols = max(1, width // tile_w)
-        for i, (_, tile) in enumerate(self.tiles):
-            tile.grid(row=i // cols, column=i % cols, padx=6, pady=6)
-
     def _wheel(self, event):
-        if self.canvas.yview() != (0.0, 1.0):
-            self.canvas.yview_scroll(int(-event.delta / 120), "units")
+        first, last = self.canvas.yview()
+        if (first, last) != (0.0, 1.0):
+            self.canvas.yview_scroll(int(-event.delta / 120) * 3, "units")
 
     # ---------- al costado: el detalle de la carta ----------
     def _detail(self, body):
@@ -1961,9 +2004,8 @@ class DeckView(tk.Frame):
         self.back_btn.config(state="normal" if self.history else "disabled")
         if not self.panel.winfo_ismapped():
             self.panel.pack(side="right", fill="y", padx=(12, 0), before=self.wrap)
-        for cid, tile in self.tiles:
-            tile.config(highlightbackground=ACCENT if cid == card_id else BG)
         self._render()
+        self._redraw_later()  # el marco de la carta elegida (y la grilla, que se angostó al abrir el detalle)
 
     def go_back(self):
         if self.history:
@@ -1972,8 +2014,7 @@ class DeckView(tk.Frame):
     def close_card(self):
         self.panel.pack_forget()
         self.card, self.history = None, []
-        for _, tile in self.tiles:
-            tile.config(highlightbackground=BG)
+        self._redraw_later()
 
     def toggle_evo(self):
         self.evo = not self.evo
