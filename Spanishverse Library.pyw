@@ -1158,6 +1158,7 @@ class DeckBuilder(tk.Frame):
         self.app, self.data = app, app.data
         self.counts = {}
         self.class_id = None
+        self.related = None  # (tipo, carta): en la lista de la izquierda, las creadoras o lo que trae esa carta
         self.job = None  # pedido a la página oficial en curso: (hilo, resultado, qué hacer al terminar)
         self.classes = {self.data.label("classes", k): k for k in sorted(self.data.lookup["classes"]) if k}
 
@@ -1225,8 +1226,15 @@ class DeckBuilder(tk.Frame):
 
     def _pool_side(self, pane):
         side = ttk.Frame(pane, style="Panel.TFrame")
-        top = tk.Frame(side, bg=PANEL)
+        top = self.search_row = tk.Frame(side, bg=PANEL)
         top.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        # En su lugar, con «Ver creadoras» / «Ver lo que trae»: de qué carta es la lista y cómo volver.
+        rel = self.related_row = tk.Frame(side, bg=FIELD, padx=8, pady=6)
+        ttk.Button(rel, text="← Volver a todas las cartas", command=lambda: self.show_related(None)).pack(side="right")
+        self.related_label = tk.Label(rel, text="", bg=FIELD, fg=INK, font=F("Segoe UI Semibold", 10), anchor="w",
+                                      justify="left")
+        self.related_label.pack(side="left", fill="x", expand=True)
+        rel.bind("<Configure>", lambda e: self.related_label.config(wraplength=max(150, e.width - 230)))
         tk.Label(top, text="Buscar", bg=PANEL, fg=MUTED, font=F(*FONT)).pack(side="left", padx=(0, 6))
         self.search = tk.StringVar()
         self.search.trace_add("write", lambda *_: self._fill_pool())
@@ -1239,6 +1247,7 @@ class DeckBuilder(tk.Frame):
                                       ("name_es", "Nombre en español", 170, True), ("type", "Tipo", 100, False),
                                       ("rarity", "Rareza", 85, False), ("have", "En el mazo", 80, False)))
         self.pool.tag_configure("full", foreground=MUTED)
+        self.pool.tag_configure("no", foreground=MUTED)  # en la lista de relacionadas: no puede ir al mazo
         self.pool.bind("<Double-1>", lambda e: self._on_row(self.pool, e, 1))
         self.pool.bind("<Return>", lambda _: self._selected_change(self.pool, 1))
         self.pool.bind("<Button-3>", lambda e: self._on_row(self.pool, e, -1))
@@ -1316,10 +1325,51 @@ class DeckBuilder(tk.Frame):
         return [c["cost"], c["name_en"], c["name_es"] or "", d.label("types", c["type_id"]),
                 d.label("rarities", c["rarity_id"])]
 
+    def show_related(self, kind, card_id=None):
+        """La lista de la izquierda pasa a mostrar las creadoras ("creators") o lo que trae ("creations") de una
+        carta; con kind=None vuelve a todas las cartas."""
+        self.related = (kind, card_id) if kind else None
+        base = self.pool.base_widths["have"][0]
+        self.pool.column("have", width=round((base * 2.2 if self.related else base) * _font_scale[0]))
+        if self.related:
+            c = self.data.cards[card_id]
+            what = "Cartas que pueden crear o traer a" if kind == "creators" else "Cartas que crea o puede traer"
+            self.related_label.config(text=f"{what} {c['name_en']}")
+            self.search_row.grid_remove()
+            self.related_row.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        else:
+            self.related_row.grid_remove()
+            self.search_row.grid()
+            if self.app.creators_mode:
+                self.app.creators_mode = None
+                self.app._sync_mode_buttons()
+        self._fill_pool()
+
+    def _fill_related(self):
+        kind, card_id = self.related
+        d = self.data
+        sure, possible = (d.creators_of if kind == "creators" else d.creations_of)(card_id)
+        where = {"mazo": "de tu mazo", "cementerio": "de tu cementerio"}
+        by_cost = lambda i: (d.cards[i]["cost"] or 0, d.cards[i]["class_id"] == 0, d.cards[i]["name_en"].lower())
+        n = 0
+        for cid in sorted(sure, key=by_cost) + sorted(possible, key=by_cost):
+            c = d.cards[cid]
+            why = self.cannot_add(cid)
+            note = "posible" + (f" ({where[possible[cid]]})" if possible.get(cid) in where else "") \
+                if cid in possible else ""
+            self.pool.insert("", "end", iid=str(cid), values=self._row(c) + [""], tags=("no",) if why else ())
+            self.pool.set(str(cid), "have", why or note)
+            n += 1
+        self.pool_count.config(text=f"{n} cartas")
+        self.related_label.config(text=self.related_label.cget("text").split("  (")[0] + f"  ({n})")
+        self._mark_pool()
+
     def _fill_pool(self):
         """Cartas que se pueden poner: de la clase elegida y neutrales, sin fichas (y en Rotación, solo las de la
         rotación), ordenadas por costo como en el juego."""
         self.pool.delete(*self.pool.get_children())
+        if self.related:
+            return self._fill_related()
         if self.class_id is None:
             self.pool_count.config(text="Elegí una clase para empezar")
             return
@@ -1350,12 +1400,40 @@ class DeckBuilder(tk.Frame):
             cid = int(iid)
             have = self._copies(cid)
             limit = self.data.cards[cid]["deck_limit"] or 3
+            if self.related:
+                why = self.cannot_add(cid)
+                if not why:
+                    old = self.pool.set(iid, "have")
+                    note = old if old.startswith("posible") else ""
+                    self.pool.set(iid, "have", f"{have} / {limit}" if have else note)
+                self.pool.item(iid, tags=("no",) if why else ("full",) if have >= limit else ())
+                continue
             self.pool.set(iid, "have", f"{have} / {limit}" if have else "")
             self.pool.item(iid, tags=("full",) if have >= limit else ())
+
+    def cannot_add(self, card_id):
+        """Por qué esta carta no puede ir a este mazo (texto corto), o None si puede."""
+        c = self.data.cards[card_id]
+        if c["is_token"]:
+            return "ficha"
+        if self.class_id is None:
+            return "elegí una clase"
+        if c["class_id"] not in (0, self.class_id):
+            return "otra clase"
+        if self._format() == decks.ROTATION and not c["in_rotation"]:
+            return "fuera de Rotación"
+        return None
 
     def change(self, card_id, delta):
         c = self.data.cards[card_id]
         if delta > 0:
+            why = self.cannot_add(card_id)
+            if why:
+                reasons = {"ficha": "es una ficha: se crea durante la partida y no va en el mazo",
+                           "elegí una clase": "primero elegí la clase del mazo",
+                           "otra clase": "es de otra clase",
+                           "fuera de Rotación": "no está en Rotación (cambiá el formato a Ilimitado)"}
+                return self._say(f"{c['name_en']} no se puede agregar: {reasons[why]}.", self.BAD)
             limit = c["deck_limit"] or 3
             if self._copies(card_id) >= limit:
                 return self._say(f"Ya tenés {limit} copias de {c['name_en']} (es el máximo).")
@@ -1642,7 +1720,9 @@ class DeckBuilder(tk.Frame):
 class DeckView(tk.Frame):
     """El mazo de forma visual, como en el juego: arriba sus datos (curva, tipos, cartas, viales) y debajo las
     cartas con sus copias. Un clic en una carta abre al costado su detalle, con sus voces (normales y
-    evolucionadas) y las cartas que crea. Cubre toda la ventana; «✕ Cerrar» o Esc vuelven al armador."""
+    evolucionadas) y los botones «Ver creadoras» / «Ver lo que crea»: muestran esas cartas en el lugar del mazo,
+    con − y + para sacarlas o agregarlas («← Volver al mazo» o Esc vuelven). Cubre toda la ventana; «✕ Cerrar» o
+    Esc vuelven al armador."""
     TILE = 3  # las imágenes de las cartas, a un tercio (177 x 229)
 
     def __init__(self, app, builder):
@@ -1650,23 +1730,23 @@ class DeckView(tk.Frame):
         self.app, self.data, self.builder = app, app.data, builder
         self.card, self.evo, self.history = None, False, []
         self.voice_pos, self.voice_btns = {}, {}
-        self.show_creations = False
+        self.related = None  # (tipo, carta): en el lugar del mazo, las creadoras o lo que crea esa carta
         self.tiles = []
         self.place(x=0, y=0, relwidth=1, relheight=1)
         self.lift()
         self._header()
-        body = tk.Frame(self, bg=BG)
+        body = self.body = tk.Frame(self, bg=BG)
         body.pack(fill="both", expand=True, padx=12, pady=(0, 12))
         self._grid(body)
         self._detail(body)
-        self.bind("<Escape>", lambda _: self.close())
+        self.bind("<Escape>", lambda _: self.show_related(None) if self.related else self.close())
         self.focus_set()
 
     # ---------- arriba: los datos del mazo ----------
     def _header(self):
         b, d = self.builder, self.data
-        head = tk.Frame(self, bg=PANEL, padx=18, pady=12)
-        head.pack(fill="x", padx=12, pady=12)
+        head = self.head = tk.Frame(self, bg=PANEL, padx=18, pady=12)
+        head.pack(fill="x", padx=12, pady=12, **({"before": self.body} if hasattr(self, "body") else {}))
         left = tk.Frame(head, bg=PANEL)
         left.pack(side="left", fill="y")
         tk.Label(left, text=b.name.get().strip() or "Mazo sin nombre", bg=PANEL, fg=INK,
@@ -1694,9 +1774,14 @@ class DeckView(tk.Frame):
 
     # ---------- las cartas ----------
     def _grid(self, body):
-        d = self.data
         self.wrap = tk.Frame(body, bg=BG)
         self.wrap.pack(side="left", fill="both", expand=True)
+        # Barra de la lista de creadoras / lo que crea (arriba de las cartas, solo mientras se ve esa lista).
+        self.related_bar = tk.Frame(self.wrap, bg=FIELD, padx=10, pady=8)
+        ttk.Button(self.related_bar, text="← Volver al mazo", command=lambda: self.show_related(None)).pack(side="right")
+        self.related_label = tk.Label(self.related_bar, text="", bg=FIELD, fg=INK, font=F("Segoe UI Semibold", 11),
+                                      anchor="w", justify="left")
+        self.related_label.pack(side="left", fill="x", expand=True)
         self.canvas = tk.Canvas(self.wrap, bg=BG, highlightthickness=0)
         scroll = ttk.Scrollbar(self.wrap, orient="vertical", command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=scroll.set)
@@ -1708,6 +1793,18 @@ class DeckView(tk.Frame):
         self.canvas.bind("<Configure>", lambda e: self._layout(e.width))
         for w in (self.canvas, self.inner):
             w.bind("<MouseWheel>", self._wheel)
+        self._deck_tiles()
+
+    def _clear_tiles(self):
+        for _, tile in self.tiles:
+            tile.destroy()
+        self.tiles = []
+        self.canvas.yview_moveto(0)
+
+    def _deck_tiles(self):
+        """Las cartas del mazo, con sus copias."""
+        d = self.data
+        self._clear_tiles()
         counts = self.builder.counts
         for cid in sorted(counts, key=lambda k: (d.cards[k]["cost"], d.cards[k]["name_en"].lower())):
             tile = tk.Frame(self.inner, bg=BG, highlightthickness=3, highlightbackground=BG, cursor="hand2")
@@ -1722,6 +1819,83 @@ class DeckView(tk.Frame):
                 w.bind("<Button-1>", lambda _, c=cid: self.open_card(c))
                 w.bind("<MouseWheel>", self._wheel)
             self.tiles.append((cid, tile))
+        self._layout(self.canvas.winfo_width())
+
+    # ---------- en el lugar del mazo: creadoras o lo que crea una carta ----------
+    def show_related(self, kind, card_id=None):
+        d = self.data
+        self.related = (kind, card_id) if kind else None
+        if not self.related:
+            self.related_bar.pack_forget()
+            self._deck_tiles()
+        else:
+            sure, possible = (d.creators_of if kind == "creators" else d.creations_of)(card_id)
+            what = "Cartas que pueden crear o traer a" if kind == "creators" else "Cartas que crea o puede traer"
+            self.related_label.config(text=f"{what} {d.cards[card_id]['name_en']}  ({len(sure) + len(possible)})")
+            if not self.related_bar.winfo_manager():
+                self.related_bar.pack(fill="x", pady=(0, 8), before=self.wrap.pack_slaves()[0])
+            self._related_tiles(sure, possible)
+        if self.card is not None:
+            self._render()  # los botones del detalle quedan apretados o no
+
+    def _related_tiles(self, sure, possible):
+        d, b = self.data, self.builder
+        self._clear_tiles()
+        where = {"mazo": "de tu mazo", "cementerio": "de tu cementerio"}
+        by_cost = lambda i: (d.cards[i]["cost"] or 0, d.cards[i]["class_id"] == 0, d.cards[i]["name_en"].lower())
+        for cid in sorted(sure, key=by_cost) + sorted(possible, key=by_cost):
+            c = d.cards[cid]
+            tile = tk.Frame(self.inner, bg=BG, highlightthickness=3, highlightbackground=BG, cursor="hand2")
+            img = self._tile_image(c)
+            pic = tk.Label(tile, image=img, bg=BG) if img else tk.Label(
+                tile, text=c["name_en"], bg=FIELD, fg=INK, font=F(*FONT), width=22, height=12, wraplength=160)
+            pic.pack()
+            note = "posible" + (f" · {where[possible[cid]]}" if possible.get(cid) in where else "") \
+                if cid in possible else ""
+            tk.Label(tile, text=note, bg=BG, fg=MUTED, font=F("Segoe UI", 9)).pack()
+            row = tk.Frame(tile, bg=BG)
+            row.pack(pady=(2, 0))
+            why = b.cannot_add(cid)
+            if why:  # no puede ir al mazo: se dice por qué
+                tk.Label(row, text={"ficha": "Ficha: no va en el mazo", "otra clase": "Otra clase",
+                                    "fuera de Rotación": "Fuera de Rotación",
+                                    "elegí una clase": "Elegí la clase del mazo"}[why],
+                         bg=BG, fg=DeckBuilder.BAD, font=F("Segoe UI Semibold", 10)).pack()
+            else:
+                minus = ttk.Button(row, text="−", width=3, command=lambda c=cid: self._change(c, -1))
+                minus.pack(side="left")
+                count = tk.Label(row, text="", bg=BG, fg=INK, font=F("Segoe UI Semibold", 11), width=7)
+                count.pack(side="left")
+                plus = ttk.Button(row, text="+", width=3, command=lambda c=cid: self._change(c, 1))
+                plus.pack(side="left")
+                tile.controls = (minus, count, plus)
+            for w in (tile, pic):
+                w.bind("<Button-1>", lambda _, c=cid: self.open_card(c))
+            for w in (tile, pic, row, *row.winfo_children()):
+                w.bind("<MouseWheel>", self._wheel)
+            self.tiles.append((cid, tile))
+            self._mark_tile(cid, tile)
+        self._layout(self.canvas.winfo_width())
+
+    def _mark_tile(self, cid, tile):
+        if not hasattr(tile, "controls"):
+            return
+        minus, count, plus = tile.controls
+        have = self.builder._copies(cid)
+        limit = self.data.cards[cid]["deck_limit"] or 3
+        full_deck = sum(self.builder.counts.values()) >= decks.DECK_SIZE
+        count.config(text=f"{have} / {limit}")
+        minus.config(state="normal" if self.builder.counts.get(cid) else "disabled")
+        plus.config(state="disabled" if have >= limit or full_deck else "normal")
+        tile.config(highlightbackground=ACCENT if have else BG)
+
+    def _change(self, cid, delta):
+        """− / + en la lista de creadoras / lo que crea: saca o agrega una copia al mazo."""
+        self.builder.change(cid, delta)
+        for c, tile in self.tiles:
+            self._mark_tile(c, tile)
+        self.head.destroy()
+        self._header()
 
     def _tile_image(self, card):
         for lang, folder in (("es", "es419"), ("en", "eng")):
@@ -1778,7 +1952,7 @@ class DeckView(tk.Frame):
     def open_card(self, card_id, remember=True):
         if remember and self.card is not None and self.card != card_id:
             self.history.append(self.card)
-        self.card, self.evo, self.show_creations = card_id, False, False
+        self.card, self.evo = card_id, False
         self.back_btn.config(state="normal" if self.history else "disabled")
         if not self.panel.winfo_ismapped():
             self.panel.pack(side="right", fill="y", padx=(12, 0), before=self.wrap)
@@ -1839,12 +2013,15 @@ class DeckView(tk.Frame):
         if c["evo_img_en"] or c["evo_img_es"]:
             ttk.Button(row, text="Ver normal" if self.evo else "Ver evolucionada", width=16,
                        command=self.toggle_evo).pack(side="left", padx=(0, 6))
-        sure, possible = d.creations_of(self.card)
-        if sure or possible:
-            var = tk.BooleanVar(value=self.show_creations)
-            ttk.Checkbutton(row, text=f"⤵ Ver lo que crea ({len(sure) + len(possible)})", style="Creators.Toolbutton",
-                            variable=var, cursor="hand2",
-                            command=lambda: self._toggle_creations(var.get())).pack(side="left")
+        for kind, label, finder in (("creators", "⤴ Ver creadoras", d.creators_of),
+                                    ("creations", "⤵ Ver lo que crea", d.creations_of)):
+            sure, possible = finder(self.card)
+            if sure or possible:
+                var = tk.BooleanVar(value=self.related == (kind, self.card))
+                ttk.Checkbutton(row, text=f"{label} ({len(sure) + len(possible)})", style="Creators.Toolbutton",
+                                variable=var, cursor="hand2",
+                                command=lambda k=kind, v=var: self.show_related(k if v.get() else None, self.card)
+                                ).pack(side="left", padx=(0, 6))
         # (los botones van dentro del texto: sin esto tomarían su puntero de texto en vez de la flecha)
         row.config(cursor="arrow")
         voice_row = tk.Frame(t, bg=PANEL, cursor="arrow")
@@ -1868,32 +2045,12 @@ class DeckView(tk.Frame):
             if e["key"] in ("crystal", "accelerate"):
                 title += f" · COSTO {e['cost']}"
             self._section(title, e.get("en"), e.get("es"), e.get("tr"))
-        if self.show_creations:
-            t.mark_set("crea", "end-1c")
-            t.mark_gravity("crea", "left")
-            t.insert("end", "\nLO QUE CREA O PUEDE TRAER\n", "h")
-            by_class = lambda i: (d.cards[i]["class_id"], d.cards[i]["cost"] or 0, i)
-            where = {"mazo": " (de tu mazo)", "cementerio": " (de tu cementerio)"}
-            for rid in sorted(sure, key=by_class) + sorted(possible, key=by_class):
-                r = d.cards[rid]
-                t.insert("end", "• ")
-                app.link(r["name_en"], rid, t=t, go=self.open_card)
-                extra = f"  ({r['name_es']})" if r["name_es"] else ""
-                if rid in possible:
-                    extra += "  · posible" + where.get(possible[rid], "")
-                t.insert("end", extra + ("  · ficha" if r["is_token"] else "") + "\n", "note")
         self._section("AMBIENTACIÓN", c["flavour_en"], c["flavour_es"], c.get("flavour_tr"))
         if c["type_id"] == 1:
             self._section("AMBIENTACIÓN EVOLUCIONADA", c["evo_flavour_en"], c["evo_flavour_es"],
                           c.get("evo_flavour_tr"))
         t.insert("end", f"\n\nIlustración: {c['illustrator'] or '—'} · Voz: {c['cv'] or '—'} · ID {c['card_id']}\n", "note")
         t.yview_moveto(0)
-        if self.show_creations:
-            self.after_idle(lambda: t.yview("crea"))
-
-    def _toggle_creations(self, on):
-        self.show_creations = on
-        self._render()
 
     def play(self, phase):
         """Reproduce la siguiente línea de voz (normal o evolucionada); después de la última vuelve a la primera."""
@@ -2856,6 +3013,11 @@ class App(tk.Tk):
         self._sync_mode_buttons()
 
     def toggle_related_list(self, kind, card_id, on):
+        if self._deck_shown():  # en el armador: la lista aparece en el lugar de las cartas disponibles
+            self.creators_mode = (kind, card_id) if on else None
+            self._sync_mode_buttons()
+            self.deck_view.show_related(kind if on else None, card_id)
+            return
         if on:
             self.show_related_list(kind, card_id)
         else:
@@ -3161,6 +3323,8 @@ class App(tk.Tk):
     def close_deck_builder(self):
         if not self._deck_shown():
             return
+        if self.deck_view.related:  # la lista del armador vuelve a todas las cartas
+            self.deck_view.show_related(None)
         self._swap_left(self.deck_view, self.left)
         self.search_box.pack(side="left")
 
