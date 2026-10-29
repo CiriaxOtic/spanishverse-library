@@ -1,6 +1,6 @@
 {
- "app": "1.0.0",
- "descarga": "https://github.com/FrancoBalzan/spanishverse-library/releases/latest",
+ "app": "1.0.1",
+ "descarga": "https://github.com/CiriaxOtic/spanishverse-library/releases/latest",
  "archivos": {
   "traducciones/lore.json": "13113ab2384938c09ecb772443b08396bd72a814",
   "traducciones/correcciones.json": "e5f3f223eef6774807aa4e896a58a4574e6fb54c",
@@ -11,7 +11,7 @@
    "nombre": "Imágenes de las cartas",
    "archivo": "imagenes-cartas.zip",
    "carpeta": "images",
-   "url": "https://github.com/FrancoBalzan/spanishverse-library/releases/download/v1.0.0/imagenes-cartas.zip",
+   "url": "https://github.com/CiriaxOtic/spanishverse-library/releases/download/v1.0.0/imagenes-cartas.zip",
    "tamaño": "904 MB",
    "archivos": [
     "eng/001d01c47b9343678e4c24134b269285.png",
@@ -1696,7 +1696,7 @@
    "nombre": "Ilustraciones sin marco (1 de 2)",
    "archivo": "ilustraciones-1.zip",
    "carpeta": "images/arte",
-   "url": "https://github.com/FrancoBalzan/spanishverse-library/releases/download/v1.0.0/ilustraciones-1.zip",
+   "url": "https://github.com/CiriaxOtic/spanishverse-library/releases/download/v1.0.0/ilustraciones-1.zip",
    "tamaño": "1003 MB",
    "archivos": [
     "10001110.png",
@@ -2328,7 +2328,7 @@
    "nombre": "Ilustraciones sin marco (2 de 2)",
    "archivo": "ilustraciones-2.zip",
    "carpeta": "images/arte",
-   "url": "https://github.com/FrancoBalzan/spanishverse-library/releases/download/v1.0.0/ilustraciones-2.zip",
+   "url": "https://github.com/CiriaxOtic/spanishverse-library/releases/download/v1.0.0/ilustraciones-2.zip",
    "tamaño": "931 MB",
    "archivos": [
     "10412110.png",

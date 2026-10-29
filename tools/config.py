@@ -4,10 +4,11 @@ GITHUB_USER / GITHUB_REPO: la página de GitHub donde se publica el programa. De
 datos/version.json (versión nueva disponible, revisión de las traducciones, paquetes de imágenes) y las traducciones
 y correcciones más nuevas. Si GITHUB_USER está vacío, el programa se actualiza solo desde el sitio oficial y WBGDB.
 """
-VERSION = "1.0.0"
-GITHUB_USER = "FrancoBalzan"  # el nombre de usuario de GitHub de quien publica el programa
+VERSION = "1.0.1"
+GITHUB_USER = "CiriaxOtic"  # el nombre de usuario de GitHub de quien publica el programa
 GITHUB_REPO = "spanishverse-library"
 BRANCH = "main"
+PACKS_TAG = "v1.0.0"  # la versión de GitHub que tiene subidos los paquetes de imágenes (no se resuben en cada versión)
 
 
 def raw_url(path):
