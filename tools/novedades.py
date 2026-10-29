@@ -1,6 +1,11 @@
 """Novedades de cada versión, para la ventana «Novedades de la versión» (se muestra sola la primera vez que se abre
 una versión nueva). La más nueva va primero."""
 NOVEDADES = [
+    ("1.1.3", [
+        "El programa abre siempre en tema oscuro. El tema claro («Ayuda → Tema claro») dura hasta cerrarlo.",
+        "Más palabras clave resaltadas, con su significado al pasar el mouse: los títulos Acelerar, Cristalizar, "
+        "Blasón y Fe, y las habilidades que el texto nombra sin marcar (Fe, Activación, Sello de Tierra, Pista…).",
+    ]),
     ("1.1.2", [
         "Tema claro con más contraste: grises medios en capas (nada blanco) y botones, campos, casillas y barras "
         "con su propio tono y un borde oscuro, para que se distingan del fondo.",

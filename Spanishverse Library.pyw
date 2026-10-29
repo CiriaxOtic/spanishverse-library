@@ -49,13 +49,25 @@ BTN, BTN_HOVER, EDGE, TRACK = PANEL, LINE, LINE, FIELD  # TRACK: interruptor, de
 
 
 def _chosen_theme():
+    """El programa abre siempre con el tema oscuro (pedido del usuario). «Ayuda → Tema claro» reinicia el programa
+    dejando anotado «tema_esta_vez»: vale solo para ese arranque, se borra enseguida y al volver a abrirlo es oscuro.
+    (Las versiones anteriores guardaban «tema» para siempre: también se borra.)"""
+    path = ROOT / "ajustes.json"
     try:
-        return json.loads((ROOT / "ajustes.json").read_text(encoding="utf-8")).get("tema", "oscuro")
+        settings = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return "oscuro"
+    theme = settings.pop("tema_esta_vez", "oscuro")
+    if "tema" in settings or theme != "oscuro":
+        settings.pop("tema", None)
+        try:
+            path.write_text(json.dumps(settings, ensure_ascii=False, indent=1), encoding="utf-8")
+        except OSError:
+            pass
+    return theme if theme in ("claro", "oscuro") else "oscuro"
 
 
-THEME = _chosen_theme()  # «Ayuda → Tema claro / oscuro» (se aplica al reiniciar el programa)
+THEME = _chosen_theme()  # «Ayuda → Tema claro / oscuro»: el claro dura hasta cerrar el programa
 if THEME == "claro":
     # Grises medios (nada blanco), en capas: fondo, recuadros, campos para escribir y botones, cada uno de otro
     # tono, y botones, campos y barras con borde oscuro para que se distingan de lo que tienen atrás.
@@ -190,6 +202,21 @@ class Data:
             words = {strip(w).strip() for w in re.findall(r"<color=Keyword>(.*?)</color>", source)}
             c["kw"] = {w for w in words if w in self.kw_es}
             used |= c["kw"]
+        self.kw_used = used  # las que sirven para el filtro «Palabra clave» (clic en una palabra resaltada)
+        # Nombres de habilidades y mecánicas que el texto a veces menciona sin resaltar («usa Activación», «tu Fe»,
+        # «Obtienes un Sello de Tierra»): se marcan igual, con su significado. Solo con mayúscula, como las
+        # escribe el juego, para no marcar palabras comunes («modo», «evoluciona»).
+        names = [(en, es) for en, es in self.lookup["keywords"].values() if en and es]
+        names.append(("Victory Card", "Carta de Victoria"))
+        self.ability_terms = {"en": {}, "es": {}}  # palabra tal como aparece -> (palabra clave en inglés, en español)
+        for en, es in names:
+            if en.lower().startswith("on "):  # «Con Carga Mágica» ya es Carga Mágica
+                continue
+            self.ability_terms["en"][en] = (en.lower(), es)
+            self.ability_terms["es"][es] = (en.lower(), es)
+        self.ability_re = {lang: re.compile(r"(?<![\w-])(" + "|".join(
+            re.escape(w) for w in sorted(terms, key=len, reverse=True)) + r")(?![\w-])")
+            for lang, terms in self.ability_terms.items()}
         self.keyword_options = sorted(
             ((self.kw_es[en.lower()], en.lower()) for en, es in self.lookup["keywords"].values()
              if en and en.lower() in used and en.lower() in self.kw_es),
@@ -275,6 +302,8 @@ class Data:
                 if tid not in sure and tid not in possible and random_creators.fits(target, pool, card["class_id"]):
                     possible[tid] = pool.get("src", "mazo")
         return sure, possible
+
+    EFFECT_KEYWORDS = {"crest": "crest", "crystal": "crystallize", "accelerate": "accelerate", "faith": "faith"}
 
     def effect_title(self, key):
         """Título de un efecto especial con el nombre de su palabra clave en español."""
@@ -2725,7 +2754,7 @@ class CompareWindow(tk.Toplevel):
         t = tk.Text(parent, bg=FIELD, fg=INK, font=F(*FONT), wrap="word", relief="flat", padx=10, pady=8,
                     highlightthickness=0, cursor="arrow", insertwidth=0)
         t.grid(row=0, column=col, sticky="nsew", padx=(0, 6) if col == 0 else (6, 0))
-        for tag in ("imgline", "title", "sub", "chip", "h", "b", "i", "bi", "kw", "tip", "link", "note"):
+        for tag in ("imgline", "title", "sub", "chip", "h", "b", "i", "bi", "kw", "kwh", "tip", "link", "note"):
             opts = {k: v[4] for k, v in self.app.text.tag_configure(tag).items() if v[4] not in ("", None)}
             t.tag_configure(tag, **opts)
         t.tag_configure("diff", foreground=KW)
@@ -3069,7 +3098,7 @@ class DeckView(tk.Frame):
         scroll.pack(side="right", fill="y")
         t.pack(fill="both", expand=True)
         # Mismo formato que el detalle de la ventana principal.
-        for tag in ("imgline", "title", "sub", "chip", "h", "b", "i", "bi", "kw", "tip", "link", "note"):
+        for tag in ("imgline", "title", "sub", "chip", "h", "b", "i", "bi", "kw", "kwh", "tip", "link", "note"):
             opts = {k: v[4] for k, v in self.app.text.tag_configure(tag).items() if v[4] not in ("", None)}
             t.tag_configure(tag, **opts)
         t.bind("<Key>", lambda e: self.app._readonly_key(e, t))
@@ -3100,14 +3129,15 @@ class DeckView(tk.Frame):
         self.evo = not self.evo
         self._render()
 
-    def _section(self, title, en, es, tr=None):
+    def _section(self, title, en, es, tr=None, effect_key=None, abilities=True):
         if not en and not es:
             return
-        self.text.insert("end", "\n" + title + "\n", "h")
+        self.app.heading(title, effect_key, t=self.text)
         if self.app.show_en and en:
-            self.app.markup(en, "orig", t=self.text, go=self.open_card)
+            self.app.markup(en, "orig", t=self.text, go=self.open_card, abilities=abilities)
         else:
-            self.app.markup(es or tr or en, "es" if es else "tr" if tr else "en", t=self.text, go=self.open_card)
+            self.app.markup(es or tr or en, "es" if es else "tr" if tr else "en", t=self.text, go=self.open_card,
+                            abilities=abilities)
         self.text.insert("end", "\n")
 
     def toggle_english(self):
@@ -3181,11 +3211,11 @@ class DeckView(tk.Frame):
             title = d.effect_title(e["key"])
             if e["key"] in ("crystal", "accelerate"):
                 title += f" · COSTO {e['cost']}"
-            self._section(title, e.get("en"), e.get("es"), e.get("tr"))
-        self._section("AMBIENTACIÓN", c["flavour_en"], c["flavour_es"], c.get("flavour_tr"))
+            self._section(title, e.get("en"), e.get("es"), e.get("tr"), effect_key=e["key"])
+        self._section("AMBIENTACIÓN", c["flavour_en"], c["flavour_es"], c.get("flavour_tr"), abilities=False)
         if c["type_id"] == 1:
             self._section("AMBIENTACIÓN EVOLUCIONADA", c["evo_flavour_en"], c["evo_flavour_es"],
-                          c.get("evo_flavour_tr"))
+                          c.get("evo_flavour_tr"), abilities=False)
         t.insert("end", f"\n\nIlustración: {c['illustrator'] or '—'} · Voz: {c['cv'] or '—'} · ID {c['card_id']}\n", "note")
         t.yview_moveto(0)
 
@@ -3838,6 +3868,7 @@ class App(tk.Tk):
         t.tag_configure("i", font=F("Segoe UI", 10, "italic"))
         t.tag_configure("bi", font=F("Segoe UI Semibold", 10, "italic"))
         t.tag_configure("kw", foreground=KW, background=KW_BG)
+        t.tag_configure("kwh", foreground=KW)  # en un título: sin fondo (el título tiene espacio arriba)
         t.tag_configure("tip", underline=True)
         t.tag_configure("link", foreground=LINK, underline=True)
         t.tag_configure("note", foreground=MUTED, font=F("Segoe UI", 9))
@@ -4699,7 +4730,7 @@ class App(tk.Tk):
             title = self.data.effect_title(e["key"])
             if e["key"] in ("crystal", "accelerate"):
                 title += f" · COSTO {e['cost']}"
-            en_only |= self.section(title, e.get("en"), e.get("es"), e.get("tr"))
+            en_only |= self.section(title, e.get("en"), e.get("es"), e.get("tr"), effect_key=e["key"])
         if en_only:
             t.insert("end", "\nTexto en inglés con las palabras clave en español. Pasá el mouse sobre ellas "
                             "para ver el término original.\n", "note")
@@ -4733,10 +4764,10 @@ class App(tk.Tk):
                 t.insert("end", q + "\n", ("b", "qa"))
                 t.insert("end", a + "\n", "qa")
 
-        self.section("AMBIENTACIÓN", c["flavour_en"], c["flavour_es"], c.get("flavour_tr"))
+        self.section("AMBIENTACIÓN", c["flavour_en"], c["flavour_es"], c.get("flavour_tr"), abilities=False)
         if c["type_id"] == 1:
             self.section("AMBIENTACIÓN EVOLUCIONADA", c["evo_flavour_en"], c["evo_flavour_es"],
-                          c.get("evo_flavour_tr"))
+                          c.get("evo_flavour_tr"), abilities=False)
         # Ilustrador y voz: un clic busca todas sus cartas.
         t.insert("end", "\n\nIlustración: ", "note")
         self._person_link(c["illustrator"], "ilustrador")
@@ -4843,10 +4874,15 @@ class App(tk.Tk):
         menu.tk_popup(b.winfo_rootx(), b.winfo_rooty() + b.winfo_height())
 
     def _toggle_theme(self):
-        new = "claro" if THEME == "oscuro" else "oscuro"
-        save_settings(tema=new)
-        if messagebox.askyesno("Tema", f"El tema {new} se aplica al reiniciar el programa. ¿Reiniciar ahora?",
-                               parent=self):
+        """El tema claro se ve después de reiniciar y dura hasta cerrar el programa (siempre abre en oscuro)."""
+        if THEME == "claro":
+            question = "Para volver al tema oscuro hay que reiniciar el programa. ¿Reiniciar ahora?"
+        else:
+            question = ("Para ver el tema claro hay que reiniciar el programa. El tema claro dura hasta que lo "
+                        "cierres: al volver a abrirlo, está en oscuro. ¿Reiniciar ahora?")
+        if messagebox.askyesno("Tema", question, parent=self):
+            if THEME == "oscuro":
+                save_settings(tema_esta_vez="claro")
             restart_program(self)
 
     def _about(self):
@@ -4878,16 +4914,16 @@ class App(tk.Tk):
         b = self.recent_btn
         menu.tk_popup(b.winfo_rootx(), b.winfo_rooty() + b.winfo_height())
 
-    def section(self, title, en, es, tr=None):
+    def section(self, title, en, es, tr=None, effect_key=None, abilities=True):
         """Texto oficial en español; si no hay, la traducción propia; si tampoco, el inglés.
-        Con «Ver en inglés», el original."""
+        Con «Ver en inglés», el original. effect_key: el efecto especial («accelerate»...) del título."""
         if not en and not es:
             return False
-        self.text.insert("end", "\n" + title + "\n", "h")
+        self.heading(title, effect_key)
         if self.show_en and en:
-            self.markup(en, "orig")  # el original tal cual, también las palabras clave
+            self.markup(en, "orig", abilities=abilities)  # el original tal cual, también las palabras clave
         else:
-            self.markup(es or tr or en, "es" if es else "tr" if tr else "en")
+            self.markup(es or tr or en, "es" if es else "tr" if tr else "en", abilities=abilities)
         self.text.insert("end", "\n")
         return not (es or tr) and not self.show_en
 
@@ -4902,12 +4938,13 @@ class App(tk.Tk):
         t.tag_bind(tag, "<Enter>", lambda _: t.config(cursor="hand2"))
         t.tag_bind(tag, "<Leave>", lambda _: t.config(cursor="xterm"))
 
-    def keyword(self, text, en_key, styles, original=None, t=None):
-        """Palabra clave resaltada; con clic se marca o desmarca en el filtro (solo en el detalle principal)."""
+    def keyword(self, text, en_key, styles, original=None, t=None, look="kw"):
+        """Palabra clave resaltada; con clic se marca o desmarca en el filtro (solo en el detalle principal).
+        look: "kw" (con fondo) o "kwh" (solo el color, para los títulos)."""
         t = t or self.text
         self.n_tags = getattr(self, "n_tags", 0) + 1
         tag = f"kwtag_{self.n_tags}"
-        t.insert("end", text, ("kw", tag) + (("tip",) if original else ()) + tuple(styles))
+        t.insert("end", text, (look, tag) + (("tip",) if original else ()) + tuple(styles))
         # Al pasar el mouse: el significado según el glosario (y, si el texto estaba en inglés, el término original).
         meaning = self.data.definition(en_key) if en_key else None
         tip = "\n".join(filter(None, [f"{meaning[0]}: {meaning[1]}" if meaning else None,
@@ -4915,7 +4952,7 @@ class App(tk.Tk):
         if tip:
             t.tag_bind(tag, "<Enter>", lambda e: self.tooltip.show(tip, e.x_root, e.y_root, wrap=340), add="+")
             t.tag_bind(tag, "<Leave>", lambda _: self.tooltip.hide(), add="+")
-        if en_key and t is self.text:
+        if en_key and t is self.text and en_key in self.data.kw_used:
             t.tag_bind(tag, "<Enter>", lambda _: t.config(cursor="hand2"), add="+")
             t.tag_bind(tag, "<Leave>", lambda _: t.config(cursor="xterm"), add="+")
             t.tag_bind(tag, "<ButtonRelease-1>", lambda _: self._keyword_click(en_key))
@@ -4954,10 +4991,12 @@ class App(tk.Tk):
             return
         self.toggle_keyword(en_key)
 
-    def markup(self, source, lang, t=None, go=None):
+    def markup(self, source, lang, t=None, go=None, abilities=True):
         """Inserta texto con el marcado del juego (<color=Keyword>, <b>, <i>, <hr>).
         lang: "en" (inglés, palabras clave en español), "orig" (inglés tal cual), "es" (oficial en español) o "tr" (traducción propia).
-        t / go: otro cuadro de texto y adónde llevan sus enlaces (ver link)."""
+        t / go: otro cuadro de texto y adónde llevan sus enlaces (ver link).
+        abilities: también resaltar los nombres de habilidades que el texto no marca (en los efectos, no en la
+        ambientación, donde «Fe» o «Aura» pueden ser parte del relato)."""
         t, bold, italic, in_kw, kw_parts = t or self.text, False, False, False, []
         translated_prev = False  # para descartar terminaciones sueltas como la "d" de "Fuse"+"d"
 
@@ -5004,8 +5043,37 @@ class App(tk.Tk):
                 continue
             elif in_kw:
                 kw_parts.append(part)
+            elif abilities:
+                self._plain_with_abilities(part, lang, style(), t)
             else:
                 t.insert("end", part, style())
+
+    def _plain_with_abilities(self, text, lang, styles, t):
+        """Texto sin marcar, con los nombres de habilidades resaltados como palabras clave (ver Data.ability_re)."""
+        side = "en" if lang in ("en", "orig") else "es"
+        pos = 0
+        for m in self.data.ability_re[side].finditer(text):
+            t.insert("end", text[pos:m.start()], styles)
+            en_key, es = self.data.ability_terms[side][m.group(1)]
+            if lang == "en":  # como las marcadas: en español, con el original al pasar el mouse
+                self.keyword(es, en_key, styles, original=m.group(1), t=t)
+            else:
+                self.keyword(m.group(1), en_key, styles, t=t)
+            pos = m.end()
+        t.insert("end", text[pos:], styles)
+
+    def heading(self, title, effect_key=None, t=None):
+        """Título de una sección del detalle. En los efectos especiales («ACELERAR · COSTO 3»), el nombre de la
+        habilidad va resaltado como palabra clave, con su significado al pasar el mouse."""
+        t = t or self.text
+        en_key = self.data.EFFECT_KEYWORDS.get(effect_key)
+        name, sep, rest = title.partition(" · ")
+        t.insert("end", "\n", "h")
+        if en_key:
+            self.keyword(name, en_key, ("h",), t=t, look="kwh")
+            t.insert("end", sep + rest + "\n", "h")
+        else:
+            t.insert("end", title + "\n", "h")
 
 
 def log_errors():
