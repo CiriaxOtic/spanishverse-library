@@ -1,6 +1,12 @@
 """Novedades de cada versión, para la ventana «Novedades de la versión» (se muestra sola la primera vez que se abre
 una versión nueva). La más nueva va primero."""
 NOVEDADES = [
+    ("1.1.6", [
+        "Con Rotación activa no se mezcla nada de Ilimitado: «Ver creadoras» y «Ver lo que trae» muestran solo "
+        "cartas de Rotación (lo que una carta crea por nombre aparece siempre), en la lista, en el detalle y en el "
+        "armador de mazos. Los números de los botones cambian al cambiar de formato.",
+        "En Rotación, la lista ya no muestra las fichas que solo crean cartas de Ilimitado.",
+    ]),
     ("1.1.5", [
         "«Ver lo que trae» y «Ver creadoras» cuentan también los robos con condición (por ejemplo, «roba una carta "
         "con Fusión» o «roba un combatiente de costo 7 o más»): las cartas que cumplen aparecen en gris como posibles "

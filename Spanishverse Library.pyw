@@ -229,6 +229,15 @@ class Data:
             c["creates"] = self._direct_creations(c)
             for rid in c["creates"]:
                 self.made_by.setdefault(rid, set()).add(c["card_id"])
+        # Lo que existe en una partida de Rotación: las cartas de la rotación y lo que ellas crean, en cadena.
+        # Una ficha que solo crean cartas de Ilimitado no aparece en Rotación.
+        self.rotation_ids = {cid for cid, c in self.cards.items() if c["in_rotation"] and not c["is_token"]}
+        pending = list(self.rotation_ids)
+        while pending:
+            for rid in self.cards[pending.pop()]["creates"]:
+                if rid not in self.rotation_ids:
+                    self.rotation_ids.add(rid)
+                    pending.append(rid)
         self.random_pools = {}
         names_en = set(self.by_name_en)
         not_random = set(load_corrections().get("no_crea_al_azar", []))
@@ -276,29 +285,35 @@ class Data:
             creates |= {rid for rid in c["related"] if self.cards[rid]["name_en"] == "Magic Sediment"}
         return creates
 
-    def creators_of(self, card_id):
-        """(seguras, posibles): cartas que nombran a esta carta, y cartas cuyo efecto aleatorio podría crearla."""
+    def creators_of(self, card_id, rotation=False):
+        """(seguras, posibles): cartas que nombran a esta carta, y cartas cuyo efecto aleatorio podría crearla.
+        rotation=True: solo las creadoras que existen en Rotación."""
         target = self.cards[card_id]
         sure = set(self.made_by.get(card_id, ()))  # incluye a la propia carta si se crea a sí misma
         possible = {}  # {creadora: "mazo" | "cementerio" | "nueva"}
+        if rotation and card_id not in self.rotation_ids:
+            return sure & self.rotation_ids, possible  # en Rotación ningún efecto al azar la puede traer
         for cid, pools in self.random_pools.items():
-            if cid in sure:
+            if cid in sure or (rotation and cid not in self.rotation_ids):
                 continue  # (una carta sí puede traerse a sí misma, ej. Reanimar una copia suya destruida)
             srcs = [p.get("src", "mazo") for p in pools if random_creators.fits(target, p, self.cards[cid]["class_id"])]
             if srcs:
                 possible[cid] = srcs[0]
-        return sure, possible
+        return (sure & self.rotation_ids if rotation else sure), possible
 
-    def creations_of(self, card_id):
+    def creations_of(self, card_id, rotation=False):
         """(nombradas, posibles): lo que esta carta puede traer. Nombradas = cartas que su efecto menciona;
         posibles = todas las cartas que cumplen las condiciones de sus efectos al azar o de cementerio,
-        de su clase o neutrales (incluida ella misma si cumple)."""
+        de su clase o neutrales (incluida ella misma si cumple). rotation=True: las posibles, solo de Rotación
+        (las nombradas las crea igual)."""
         card = self.cards[card_id]
         sure = set(card["creates"])  # solo lo que su efecto crea (incluida ella misma si se crea a sí misma)
         possible = {}
         for pool in self.random_pools.get(card_id, ()):
             for target in self.cards.values():
                 tid = target["card_id"]
+                if rotation and tid not in self.rotation_ids:
+                    continue
                 if tid not in sure and tid not in possible and random_creators.fits(target, pool, card["class_id"]):
                     possible[tid] = pool.get("src", "mazo")
         return sure, possible
@@ -2322,7 +2337,8 @@ class DeckBuilder(tk.Frame):
     def _fill_related(self):
         kind, card_id = self.related
         d = self.data
-        sure, possible = (d.creators_of if kind == "creators" else d.creations_of)(card_id)
+        sure, possible = (d.creators_of if kind == "creators" else d.creations_of)(
+            card_id, rotation=self._format() == decks.ROTATION)
         where = {"mazo": "de tu mazo", "cementerio": "de tu cementerio"}
         by_cost = lambda i: (d.cards[i]["cost"] or 0, d.cards[i]["class_id"] == 0, d.cards[i]["name_en"].lower())
         n = 0
@@ -2472,6 +2488,7 @@ class DeckBuilder(tk.Frame):
         self.problems_label.config(text="\n".join("• " + p for p in issues))
         self.code.set("")
         self._draw_curve()
+        self.app._follow_format()  # (cargar un mazo también puede cambiar el formato)
 
     def curve_counts(self):
         """Copias por costo: ≤1, 2, ..., 7, 8+ (como la curva del juego)."""
@@ -2975,7 +2992,8 @@ class DeckView(tk.Frame):
             self.related_bar.pack_forget()
             self._deck_tiles()
         else:
-            sure, possible = (d.creators_of if kind == "creators" else d.creations_of)(card_id)
+            sure, possible = (d.creators_of if kind == "creators" else d.creations_of)(
+                card_id, rotation=self.builder._format() == decks.ROTATION)
             what = "Cartas que pueden crear o traer a" if kind == "creators" else "Cartas que crea o puede traer"
             self.related_label.config(text=f"{what} {d.cards[card_id]['name_en']}  ({len(sure) + len(possible)})")
             if not self.related_bar.winfo_manager():
@@ -3224,7 +3242,7 @@ class DeckView(tk.Frame):
                    command=self.toggle_english).pack(side="left", padx=(0, 6))
         for kind, label, finder in (("creators", "⤴ Ver creadoras", d.creators_of),
                                     ("creations", "⤵ Ver lo que crea", d.creations_of)):
-            sure, possible = finder(self.card)
+            sure, possible = finder(self.card, rotation=self.builder._format() == decks.ROTATION)
             if sure or possible:
                 var = tk.BooleanVar(value=self.related == (kind, self.card))
                 ttk.Checkbutton(row, text=f"{label} ({len(sure) + len(possible)})", style="Creators.Toolbutton",
@@ -4154,8 +4172,8 @@ class App(tk.Tk):
     def matches(self, c, deck=False):
         """¿La carta pasa los filtros? deck=True: para las cartas del armador de mazos, que tiene su propio
         formato y su propia búsqueda (y nunca muestra fichas)."""
-        # Las fichas no van en mazos, así que el formato no las afecta.
-        if not deck and self.format_var.get() == "Rotación" and not c["is_token"] and not c["in_rotation"]:
+        # En Rotación: sus cartas y las fichas que ellas crean (no las que solo crean cartas de Ilimitado).
+        if not deck and self.format_var.get() == "Rotación" and c["card_id"] not in self.data.rotation_ids:
             return False
         if not deck and not self.tokens.get() and c["is_token"]:
             return False
@@ -4262,6 +4280,22 @@ class App(tk.Tk):
         self._update_filter_summary()
         if self._deck_shown():
             self.deck_view._fill_pool()
+        self._follow_format()
+
+    def rotation_on(self):
+        """¿Rotación? Con el armador abierto manda su propio interruptor; si no, el de la lista."""
+        if self._deck_shown():
+            return self.deck_view._format() == decks.ROTATION
+        return self.format_var.get() == "Rotación"
+
+    def _follow_format(self):
+        """Si cambió Ilimitado / Rotación, vuelve a armar el detalle: sus listas de creadoras cambian."""
+        if not self.current or self._detail_rotation == self.rotation_on():
+            return
+        mode, self.creators_mode = self.creators_mode, None  # (show() saldría del modo especial)
+        self.show(self.current, remember=False)
+        self.creators_mode = mode
+        self._sync_mode_buttons()
 
     def _sync_mode_buttons(self):
         """Los botones del detalle reflejan el modo actual (solo uno puede estar apretado)."""
@@ -4274,7 +4308,8 @@ class App(tk.Tk):
         - "creators": las cartas que crean o podrían traer esta carta;
         - "creations": las cartas que esta carta crea o podría traer."""
         self.creators_mode = (kind, card_id)
-        sure, possible = (self.data.creators_of if kind == "creators" else self.data.creations_of)(card_id)
+        sure, possible = (self.data.creators_of if kind == "creators" else self.data.creations_of)(
+            card_id, rotation=self.rotation_on())
         by_class = lambda c: (c["class_id"], c["cost"] or 0, c["card_id"])
         cards = [self.data.cards[i] for i in sure]
         extra = [self.data.cards[i] for i in possible]
@@ -4654,6 +4689,7 @@ class App(tk.Tk):
         self.search_box.pack_forget()  # el buscador de arriba es de la lista; el armador tiene el suyo
         self._update_filter_summary()
         self.deck_view._fill_pool()
+        self._follow_format()  # ahora manda el Ilimitado / Rotación del armador
         if first:  # lista de cartas del armador más ancha que la del mazo (cuando ya tiene su ancho de verdad)
             inner = self.deck_view.inner
 
@@ -4677,6 +4713,7 @@ class App(tk.Tk):
         self.format_switch.pack(anchor="w", before=self.size_slider)
         self.search_box.pack(side="left")
         self._update_filter_summary()
+        self._follow_format()  # vuelve a mandar el Ilimitado / Rotación de la lista
 
     def _list_area(self):
         """Lo que va debajo de los filtros: la lista de cartas o el armador de mazos."""
@@ -4700,6 +4737,7 @@ class App(tk.Tk):
         if remember and self.current and self.current != card_id:
             self.history.append(self.current)
         self.current = card_id
+        self._detail_rotation = rotation = self.rotation_on()
         self.show_evo = False
         self.voice_pos.clear()  # al abrir una carta (otra o la misma de nuevo) las voces arrancan de la línea 1
         self.back_btn.config(state="normal" if self.history else "disabled")
@@ -4766,7 +4804,7 @@ class App(tk.Tk):
         buttons.append(ttk.Button(t, text="↔ Comparar", cursor="hand2", command=lambda: CompareWindow(self, card_id)))
         for kind, label, finder in (("creators", "⤴ Ver creadoras", d.creators_of),
                                     ("creations", "⤵ Ver lo que trae", d.creations_of)):
-            sure, possible = finder(card_id)
+            sure, possible = finder(card_id, rotation=rotation)
             if not (sure or possible):
                 continue
             var = tk.BooleanVar(value=self.creators_mode == (kind, card_id))
@@ -4797,12 +4835,14 @@ class App(tk.Tk):
         self._balance_history(card_id)
 
         # "Crea" = lo que su propio efecto crea; el resto de la lista oficial son cartas relacionadas
-        # (en cadena o mencionadas), que esta carta no crea.
+        # (en cadena o mencionadas), que esta carta no crea. En Rotación, las que la crean o la mencionan
+        # son solo las de Rotación.
         made_by = d.made_by.get(card_id, set())
+        by = (lambda ids: set(ids) & d.rotation_ids) if rotation else set
         groups = (("CARTAS QUE CREA", sorted(c["creates"])),
                   ("OTRAS CARTAS RELACIONADAS (no las crea esta carta)", sorted(set(c["related"]) - c["creates"])),
-                  ("CARTAS QUE LA CREAN", sorted(made_by)),
-                  ("OTRAS CARTAS QUE LA MENCIONAN", sorted(set(c["related_by"]) - made_by)))
+                  ("CARTAS QUE LA CREAN", sorted(by(made_by))),
+                  ("OTRAS CARTAS QUE LA MENCIONAN", sorted(by(c["related_by"]) - made_by)))
         for title, ids in groups:
             if ids:
                 t.insert("end", "\n" + title + "\n", "h")
