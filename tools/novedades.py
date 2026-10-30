@@ -1,6 +1,11 @@
 """Novedades de cada versión, para la ventana «Novedades de la versión» (se muestra sola la primera vez que se abre
 una versión nueva). La más nueva va primero."""
 NOVEDADES = [
+    ("1.1.5", [
+        "«Ver lo que trae» y «Ver creadoras» cuentan también los robos con condición (por ejemplo, «roba una carta "
+        "con Fusión» o «roba un combatiente de costo 7 o más»): las cartas que cumplen aparecen en gris como posibles "
+        "de tu mazo.",
+    ]),
     ("1.1.4", [
         "Filtro «Palabra clave» con todo el glosario: además de las palabras clave, términos como Desterrar, "
         "Destruir, Robar, Descartar, Invocar o Transformar traen las cartas cuyo efecto los usa.",

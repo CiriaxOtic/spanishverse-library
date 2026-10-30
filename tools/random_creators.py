@@ -31,13 +31,42 @@ def _common_conditions(low, cond, tribes):
         cond["cost"] = (int(c.group(1)), c.group(3))  # (valor, None|'less'|'more')
 
 
+def _draw_pools(low, tribes):
+    """Robos con condición ("draw a follower", "draw a card with Fuse", "draw a spell that costs 2 or less"):
+    puede salir cualquier carta de tu mazo que la cumpla. "Draw a card" a secas no cuenta (es cualquier carta)."""
+    pools = []
+    for m in re.finditer(r"\bdraw (?:a|an|\d+|x)\s+((?:[\w-]+\s+){0,3}?)(cards?|followers?|spells?|amulets?)\b(.*)", low):
+        # La condición termina donde empieza otra acción: "draw a follower that costs 2 or less and set its cost to 0".
+        tail = re.split(r",|;|\.| and | then | if | until ", m.group(3))[0]
+        phrase = m.group(1) + m.group(2) + tail
+        cond = {"type": TYPES.get(m.group(2)), "src": "mazo"}
+        _common_conditions(phrase, cond, tribes)
+        n = re.search(r"\b(\d+)-cost\b", m.group(1))
+        if n:
+            cond["cost"] = (int(n.group(1)), None)
+        ab = re.search(r"\bwith (?!an? |cost)([a-z][a-z ]*?)\s*$", tail)
+        if ab:
+            cond["ability"] = ab.group(1)
+        if len(cond) > 2 or cond["type"] is not None:
+            pools.append(cond)
+    return pools
+
+
+def has_ability(card, ability):
+    """¿La carta tiene la habilidad (Fuse, Bane, Last Words...) en su propio texto? Cuenta si abre un
+    renglón o una oración ("Fuse: Amulets", "Ward. Bane."), no si la nombra ("Whenever you Fuse", "Gain Bane")."""
+    text = strip((card.get("skill_en") or "").replace("<hr>", "\n")).lower()
+    return re.search(rf"(?:^|[\n.,:])\s*{re.escape(ability)}\s*(?:[:.,(]|$)", text, re.M) is not None
+
+
 def random_pools(text, tribes):
     """Lista de condiciones (dict) de cada efecto que puede traer una carta no nombrada, en `text` (inglés).
-    Cada condición lleva "src": "mazo" (al azar de tu mazo) o "cementerio" (algo tuyo destruido en la partida).
-    tribes: {nombre_en_minúsculas: id}."""
+    Cada condición lleva "src": "mazo" (al azar de tu mazo, o un robo con condición) o "cementerio"
+    (algo tuyo destruido en la partida). tribes: {nombre_en_minúsculas: id}."""
     pools = []
     for sentence in re.split(r"(?<=[.!])\s+|\n|<hr>", strip(text)):
         low = sentence.lower()
+        pools += _draw_pools(low, tribes)
         # Reanimación (X): copia del combatiente aliado de mayor costo destruido en la partida, de costo X o menos.
         for n in re.findall(r"\breanimate\s*\((\d+)\)", low):
             pools.append({"type": 1, "cost": (int(n), "less"), "src": "cementerio", "tokens": True})
@@ -84,6 +113,8 @@ def fits(card, cond, creator_class=0):
     if creator_class and card["class_id"] not in (creator_class, 0):
         return False
     if cond.get("needs") and cond["needs"] not in strip(card.get("skill_en")).lower():
+        return False
+    if cond.get("ability") and not has_ability(card, cond["ability"]):
         return False
     if cond.get("type") is not None:
         want = cond["type"]
