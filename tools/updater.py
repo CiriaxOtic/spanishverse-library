@@ -169,12 +169,14 @@ def download(url, dest, progress, label="", tries=6):
                     progress(f"    retomando desde {have >> 20} MB de {total >> 20} MB")
                 with open(dest, "ab" if have else "wb") as out:
                     done, last = have, -1
+                    mb = lambda n: f"{n / 1048576:.0f}"
                     while chunk := r.read(1 << 20):
                         out.write(chunk)
                         done += len(chunk)
                         pct = done * 100 // total if total else -1
-                        if pct // 10 != last // 10:
-                            progress(f"    {label}{pct}%" if pct >= 0 else f"    {label}{done >> 20} MB")
+                        if pct // 5 != last // 5:  # cada 5 %, con los MB: con internet lento no parece colgado
+                            progress(f"    {label}{pct}% ({mb(done)} de {mb(total)} MB)" if pct >= 0
+                                     else f"    {label}{mb(done)} MB")
                             last = pct
             return True
         except urllib.error.HTTPError as e:
@@ -319,7 +321,11 @@ def prepare_program_update(progress):
     import backups
     backups.make(f"antes de instalar la versión {version}")
     progress(f"Bajando la versión {version} ({program.get('tamaño', '?')})...")
-    zpath = INSTALL_DIR / "programa.zip"
+    # Un archivo por versión: lo bajado a medias de otra versión no se mezcla con esta (se borra).
+    zpath = INSTALL_DIR / f"programa-{version}.zip"
+    for stale in INSTALL_DIR.glob("programa*.zip"):
+        if stale != zpath:
+            stale.unlink(missing_ok=True)
     if not download(program["url"], zpath, progress):
         progress("No se pudo bajar; lo bajado queda guardado y la próxima vez sigue desde ahí.")
         return None
@@ -333,12 +339,12 @@ def prepare_program_update(progress):
     try:
         with zipfile.ZipFile(zpath) as z:
             z.extractall(long(new))
-    except zipfile.BadZipFile:
-        zpath.unlink()
-        progress("La descarga llegó dañada; probá de nuevo.")
-        return None
     except OSError as e:
         progress(f"No se pudo descomprimir la versión nueva ({e}). Liberá espacio en el disco y probá de nuevo.")
+        return None
+    except Exception:  # zip dañado (BadZipFile, o datos rotos que zlib no puede leer): se baja de nuevo
+        zpath.unlink(missing_ok=True)
+        progress("La descarga llegó dañada; probá de nuevo.")
         return None
     src = next((p.parent for p in new.rglob("Spanishverse Library.exe")), None)
     if src is None:
@@ -406,10 +412,10 @@ def _step(name, progress, fn, *args):
     return None
 
 
-def _cards():
+def _cards(region=None):
     import fetch_cards
     try:
-        fetch_cards.fetch_all()
+        fetch_cards.fetch_all(region=region)
     except fetch_cards.Maintenance as m:
         print(f"El sitio oficial está en mantenimiento ({m}). Probá más tarde.")
         return False
@@ -532,10 +538,13 @@ def run(progress=_console, with_voices=True):
     elif DB.exists() and official == local and fresh and not new_latam:
         progress(f"  sin cartas nuevas ({local} cartas)")
     else:
+        # Si solo cambió el sitio latino, alcanza con bajar su lista (la global no cambió y es la más larga).
+        only_latam = DB.exists() and official == local and fresh and new_latam
         why = ("primera descarga" if not DB.exists() else f"{official - local} cartas nuevas" if official > local
                else f"{latam - latam_local} cartas nuevas traducidas al español" if new_latam
                else "revisión semanal de cambios en las cartas")
-        if _step(f"  bajando la lista completa ({why}; puede tardar unos minutos)...", progress, _cards):
+        if _step(f"  bajando la lista completa ({why}; puede tardar unos minutos)...", progress, _cards,
+                 "latam" if only_latam else None):
             import changes
             photo = changes.snapshot()  # para anotar después qué cartas llegaron y cuáles cambiaron
             _step("Armando la base de cartas y las traducciones...", progress, _build)

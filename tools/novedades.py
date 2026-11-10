@@ -1,6 +1,11 @@
 """Novedades de cada versión, para la ventana «Novedades de la versión» (se muestra sola la primera vez que se abre
 una versión nueva). La más nueva va primero."""
 NOVEDADES = [
+    ("1.1.8", [
+        "«Actualizar» mucho más rápido: las imágenes nuevas de las cartas se bajan de a varias a la vez (la última "
+        "expansión pasó de unos 9 minutos a menos de 2), y si solo cambió el sitio latino se baja solo su lista.",
+        "Mientras se baja una versión nueva del programa se ven los MB que van, para saber que avanza.",
+    ]),
     ("1.1.7", [
         "Salió en LATAM la expansión «Evolución del Infinito» (Infinity Evolved): sus 77 cartas ya tienen el texto "
         "oficial en español (nombre, efecto, ambientación e imagen en español), en lugar de la traducción propia.",

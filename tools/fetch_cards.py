@@ -13,12 +13,14 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from paths import ROOT  # noqa: E402
 PAGE_SIZE = 30
-DELAY = 1.5  # segundos entre pedidos
+DELAY = 0.5  # segundos entre páginas de la lista
+IMAGE_THREADS = 4  # imágenes a la vez: de a una el sitio da ~300 KB/s; de a 4, unas 7 veces más (medido 2026-11-10)
 QUERY = "class=0,1,2,3,4,5,6,7&cost=0,1,2,3,4,5,6,7,8,9,10"
 
 REGIONS = {
@@ -31,7 +33,7 @@ class Maintenance(Exception):
     pass
 
 
-def get(url, lang=None, raw=False):
+def get(url, lang=None, raw=False, pause=True):
     headers = {"User-Agent": "Mozilla/5.0 (personal card reference)", "Accept": "*/*"}
     if lang:
         headers["lang"] = lang
@@ -46,7 +48,8 @@ def get(url, lang=None, raw=False):
                 raise
             print(f"  reintento ({e})", flush=True)
             time.sleep(5 * (attempt + 1))
-    time.sleep(DELAY)
+    if pause:
+        time.sleep(DELAY)
     if raw:
         return body
     data = json.loads(body)
@@ -98,14 +101,25 @@ def fetch_images(name, cfg, skip=()):
     wanted = {h for key, h in card_images(name).items() if key not in skip}
     todo = [h for h in sorted(wanted) if not (folder / f"{h}.png").exists()]
     print(f"[{name}] imágenes nuevas: {len(todo)}", flush=True)
-    for i, h in enumerate(todo, 1):
+
+    def one(h):
         url = f"{cfg['host']}/uploads/card_image/{cfg['img']}/card/{h}.png"
         try:
-            (folder / f"{h}.png").write_bytes(get(url, raw=True))
-        except urllib.error.HTTPError as e:
-            print(f"  {h}: HTTP {e.code}", flush=True)
-        if i % 50 == 0:
-            print(f"  {i}/{len(todo)}", flush=True)
+            data = get(url, raw=True, pause=False)
+        except urllib.error.URLError as e:
+            return f"  {h}: {getattr(e, 'code', e)}"
+        tmp = folder / f"{h}.part"  # si se corta a medias no queda una imagen rota con el nombre final
+        tmp.write_bytes(data)
+        tmp.replace(folder / f"{h}.png")
+        return None
+
+    step = max(10, len(todo) // 10)
+    with ThreadPoolExecutor(IMAGE_THREADS) as pool:
+        for i, err in enumerate(pool.map(one, todo), 1):
+            if err:
+                print(err, flush=True)
+            if i % step == 0 or i == len(todo):
+                print(f"  imágenes: {i} de {len(todo)}", flush=True)
 
 
 def fetch_all(images=True, region=None):
