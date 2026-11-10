@@ -520,6 +520,8 @@ def run(progress=_console, with_voices=True):
     state = _state()
     progress("Cartas del sitio oficial...")
     official, local = official_count(), local_count()
+    latam, latam_local = official_count("latam"), local_latam_count()
+    new_latam = latam is not None and latam > latam_local  # el sitio latino tradujo cartas nuevas
     fresh = time.time() - state.get("cartas_revision", 0) < WEEK
     if "cartas_revision" not in state and DB.exists() and official == local:
         fresh = True  # ya estaba todo (por ejemplo, de una versión anterior del programa): se toma como revisado
@@ -527,10 +529,11 @@ def run(progress=_console, with_voices=True):
     cards_changed = False
     if official is None:
         progress("  no se pudo consultar el sitio oficial (sin internet o en mantenimiento); queda lo que hay")
-    elif DB.exists() and official == local and fresh:
+    elif DB.exists() and official == local and fresh and not new_latam:
         progress(f"  sin cartas nuevas ({local} cartas)")
     else:
         why = ("primera descarga" if not DB.exists() else f"{official - local} cartas nuevas" if official > local
+               else f"{latam - latam_local} cartas nuevas traducidas al español" if new_latam
                else "revisión semanal de cambios en las cartas")
         if _step(f"  bajando la lista completa ({why}; puede tardar unos minutos)...", progress, _cards):
             import changes
@@ -575,17 +578,26 @@ def _count():
         con.close()
 
 
-def official_count():
-    """Cantidad de cartas que muestra hoy el sitio oficial (una consulta rápida), o None sin internet."""
+def official_count(region="global"):
+    """Cantidad de cartas que muestra hoy el sitio oficial (una consulta rápida), o None sin internet.
+    region "latam": las cartas que ya tienen texto oficial en español (crece cuando sale una expansión en LATAM)."""
     try:
         import fetch_cards
-        cfg = fetch_cards.REGIONS["global"]
+        cfg = fetch_cards.REGIONS[region]
         url = f"{cfg['host']}/web/CardList/cardList?offset=0&{fetch_cards.QUERY}"
         req = urllib.request.Request(url, headers={**HEADERS, "lang": cfg["lang"]})
         data = json.loads(urllib.request.urlopen(req, timeout=15).read())
         return data["data"]["count"]
     except Exception:
         return None
+
+
+def local_latam_count():
+    """Cartas en español que tenía el sitio latino la última vez que se bajó la lista (0 si nunca se bajó)."""
+    try:
+        return json.loads((ROOT / "raw" / "latam" / "list_00000.json").read_text(encoding="utf-8"))["count"]
+    except Exception:
+        return 0
 
 
 def local_count():
@@ -628,6 +640,10 @@ def pending():
         local = local_count()
         if official > local:
             reasons.append(f"Cartas nuevas: {official - local}" if local else "La base de cartas")
+    latam = official_count("latam")
+    if latam is not None and DB.exists() and latam > local_latam_count():
+        online = True
+        reasons.append(f"Cartas nuevas en español (traducción oficial): {latam - local_latam_count()}")
     if not DB.exists() and "La base de cartas" not in reasons:
         reasons.append("La base de cartas")
     if not any((ROOT / "images" / d).glob("*.png") for d in ("eng", "es419")) and not any("Imágenes" in r for r in reasons):

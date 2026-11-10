@@ -1,6 +1,12 @@
 """Novedades de cada versión, para la ventana «Novedades de la versión» (se muestra sola la primera vez que se abre
 una versión nueva). La más nueva va primero."""
 NOVEDADES = [
+    ("1.1.7", [
+        "Salió en LATAM la expansión «Evolución del Infinito» (Infinity Evolved): sus 77 cartas ya tienen el texto "
+        "oficial en español (nombre, efecto, ambientación e imagen en español), en lugar de la traducción propia.",
+        "El programa ahora también se fija en el sitio oficial latino: cuando Cygames traduzca una expansión más, "
+        "la pantalla de inicio avisa «Cartas nuevas en español» y «Actualizar» las trae.",
+    ]),
     ("1.1.6", [
         "Con Rotación activa no se mezcla nada de Ilimitado: «Ver creadoras» y «Ver lo que trae» muestran solo "
         "cartas de Rotación (lo que una carta crea por nombre aparece siempre), en la lista, en el detalle y en el "
